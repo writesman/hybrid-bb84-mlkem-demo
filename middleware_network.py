@@ -3,6 +3,7 @@ from quantcrypt.kem import MLKEM_1024
 from cryptography.fernet import Fernet
 import hashlib
 import base64
+from math import ceil
 from b92_protocol import generate_key, sender_qkd, receiver_qkd, check_key_sender, check_key_receiver
 
 
@@ -73,14 +74,23 @@ def binary_to_text(binary_string: str) -> str:
     return bytes(byte_list).decode('utf-8', 'ignore')
 
 
-def quantum_sender_protocol(host: Host, receiver_id: Host.host_id, key_length, length_of_check, message_binary, ):
+def quantum_sender_protocol(host: Host, receiver_id: Host.host_id, message, ):
+    message_binary = ''.join(format(byte, '08b') for byte in message.encode())
+
+    qkd_check_ratio = 0.5
+    key_check_length = ceil(len(message_binary) * qkd_check_ratio)
+    key_length = len(message_binary) + key_check_length
+
+    host.send_classical(receiver_id, key_check_length, await_ack=True)
+    host.send_classical(receiver_id, key_length, await_ack=True)
+
     encryption_key_binary = generate_key(key_length)
     sender_qkd(host, encryption_key_binary, receiver_id)
     print('Sent all the qubits successfully!')
-    key_to_test = encryption_key_binary[0:length_of_check]
+    key_to_test = encryption_key_binary[0:key_check_length]
     check_key_sender(host, key_to_test, receiver_id)
 
-    one_time_pad_key_list = encryption_key_binary[length_of_check:]
+    one_time_pad_key_list = encryption_key_binary[key_check_length:]
     one_time_pad_key_string = ''.join(map(str, one_time_pad_key_list))
 
     ciphertext_binary = apply_one_time_pad(message_binary, one_time_pad_key_string)
@@ -90,9 +100,12 @@ def quantum_sender_protocol(host: Host, receiver_id: Host.host_id, key_length, l
     host.send_classical(receiver_id, ciphertext_binary, await_ack=True)
 
 
-def quantum_receiver_protocol(host: Host, sender_id: Host.host_id, key_length, length_of_check, ):
+def quantum_receiver_protocol(host: Host, sender_id: Host.host_id, ):
+    key_check_length = host.get_next_classical(sender_id, wait=-1).content
+    key_length = host.get_next_classical(sender_id, wait=-1).content
+
     secret_key_bob = receiver_qkd(host, key_length, sender_id)
-    key_to_test = secret_key_bob[0:length_of_check]
+    key_to_test = secret_key_bob[0:key_check_length]
     check_key_receiver(host, key_to_test, sender_id)
 
     encrypted_message = host.get_next_classical(sender_id)
@@ -102,7 +115,7 @@ def quantum_receiver_protocol(host: Host, sender_id: Host.host_id, key_length, l
 
     ciphertext_binary = encrypted_message.content
 
-    one_time_pad_key_list = secret_key_bob[length_of_check:]
+    one_time_pad_key_list = secret_key_bob[key_check_length:]
 
     one_time_pad_key_string = ''.join(map(str, one_time_pad_key_list))
 
@@ -137,28 +150,19 @@ if __name__ == '__main__':
 
     network.add_hosts([host_classical, host_middleware, host_quantum])
 
-    message = "Hello World!"
+    message = "He"
 
-    message_binary = ''.join(format(byte, '08b') for byte in message.encode())
-    quantum_key_length = len(message_binary) * 2
-    length_of_check = round(quantum_key_length / 2)
-
-    print(f'Quantum key length: {quantum_key_length}')
-
-    # thread_1 = host_quantum.run_protocol(quantum_sender_protocol,
-    #                                      (host_middleware.host_id, quantum_key_length, length_of_check,
-    #                                       message_binary,))
-    # thread_2 = host_middleware.run_protocol(quantum_receiver_protocol,
-    #                                         (host_quantum.host_id, quantum_key_length, length_of_check,))
-    #
-    # thread_1.join()
-    # thread_2.join()
-
-    thread_1 = host_classical.run_protocol(classical_sender_protocol, (host_middleware.host_id, message,))
-    thread_2 = host_middleware.run_protocol(classical_receiver_protocol, (host_classical.host_id,))
+    thread_1 = host_quantum.run_protocol(quantum_sender_protocol, (host_middleware.host_id, message,))
+    thread_2 = host_middleware.run_protocol(quantum_receiver_protocol, (host_quantum.host_id,))
 
     thread_1.join()
     thread_2.join()
+
+    # thread_1 = host_classical.run_protocol(classical_sender_protocol, (host_middleware.host_id, message,))
+    # thread_2 = host_middleware.run_protocol(classical_receiver_protocol, (host_classical.host_id,))
+
+    # thread_1.join()
+    # thread_2.join()
 
     print(message)
 
