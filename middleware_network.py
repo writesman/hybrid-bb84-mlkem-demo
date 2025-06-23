@@ -6,9 +6,12 @@ import base64
 from math import ceil
 from b92_protocol import generate_key, sender_qkd, receiver_qkd, check_key_sender, check_key_receiver
 
+NETWORK_TIMEOUT = 20
+QKD_CHECK_RATIO = 0.5
+
 
 def classical_sender_protocol(host: Host, receiver_id: Host.host_id, message: str, kem_instance):
-    public_key_obj = host.get_next_classical(receiver_id, wait=20)
+    public_key_obj = host.get_next_classical(receiver_id, wait=NETWORK_TIMEOUT)
     if public_key_obj is None:
         print(f"ERROR: [{host.host_id}] timed out waiting for public key from [{receiver_id}].")
         return
@@ -40,7 +43,7 @@ def classical_receiver_protocol(host: Host, sender_id: Host.host_id, kem_instanc
     print(f"2. {host.host_id}: Sending public key to {sender_id}.")
     host.send_classical(sender_id, public_key, await_ack=True)
 
-    ciphertext_obj = host.get_next_classical(sender_id, wait=20)
+    ciphertext_obj = host.get_next_classical(sender_id, wait=NETWORK_TIMEOUT)
     if ciphertext_obj is None:
         print(f"ERROR: [{host.host_id}] timed out waiting for ciphertext from [{sender_id}].")
         return None
@@ -53,7 +56,7 @@ def classical_receiver_protocol(host: Host, sender_id: Host.host_id, kem_instanc
     fernet_key = base64.urlsafe_b64encode(raw_key)
     receiver_fernet = Fernet(fernet_key)
 
-    encrypted_message_obj = host.get_next_classical(sender_id, wait=20)
+    encrypted_message_obj = host.get_next_classical(sender_id, wait=NETWORK_TIMEOUT)
     if encrypted_message_obj is None:
         print(f"ERROR: [{host.host_id}] timed out waiting for encrypted message from [{sender_id}].")
         return None
@@ -89,12 +92,11 @@ def binary_to_text(binary_string: str) -> str:
 def quantum_sender_protocol(host: Host, receiver_id: Host.host_id, message, ):
     message_binary = ''.join(format(byte, '08b') for byte in message.encode())
 
-    qkd_check_ratio = 0.5
-    key_check_length = ceil(len(message_binary) * qkd_check_ratio)
+    key_check_length = ceil(len(message_binary) * QKD_CHECK_RATIO)
     key_length = len(message_binary) + key_check_length
 
-    host.send_classical(receiver_id, key_check_length, await_ack=True)
-    host.send_classical(receiver_id, key_length, await_ack=True)
+    key_info_message = f"KEY_INFO:{key_length}:{key_check_length}"
+    host.send_classical(receiver_id, key_info_message, await_ack=True)
 
     encryption_key_binary = generate_key(key_length)
     sender_qkd(host, encryption_key_binary, receiver_id)
@@ -118,23 +120,25 @@ def quantum_sender_protocol(host: Host, receiver_id: Host.host_id, message, ):
 
 
 def quantum_receiver_protocol(host: Host, sender_id: Host.host_id, ):
-    key_check_length_obj = host.get_next_classical(sender_id, wait=20)
-    if key_check_length_obj is None:
-        print(f"ERROR: [{host.host_id}] timed out waiting for key check length from [{sender_id}].")
+    key_info_obj = host.get_next_classical(sender_id, wait=NETWORK_TIMEOUT)
+    if key_info_obj is None:
+        print(f"ERROR: [{host.host_id}] timed out waiting for key info from [{sender_id}].")
         return None
-    key_check_length = key_check_length_obj.content
 
-    key_length_obj = host.get_next_classical(sender_id, wait=20)
-    if key_length_obj is None:
-        print(f"ERROR: [{host.host_id}] timed out waiting for key length from [{sender_id}].")
+    content = key_info_obj.content
+    if not content.startswith("KEY_INFO:"):
+        print(f"ERROR: [{host.host_id}] received invalid key info format.")
         return None
-    key_length = key_length_obj.content
+
+    parts = content.split(':')
+    key_length = int(parts[1])
+    key_check_length = int(parts[2])
 
     secret_key_bob = receiver_qkd(host, key_length, sender_id)
     key_to_test = secret_key_bob[0:key_check_length]
     check_key_receiver(host, key_to_test, sender_id)
 
-    encrypted_message = host.get_next_classical(sender_id, wait=20)
+    encrypted_message = host.get_next_classical(sender_id, wait=NETWORK_TIMEOUT)
     if encrypted_message is None:
         print(f"Bob: Timed out waiting for the final message. The sender may have aborted.")
         return None
