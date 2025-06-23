@@ -99,8 +99,13 @@ def quantum_sender_protocol(host: Host, receiver_id: Host.host_id, message, ):
     encryption_key_binary = generate_key(key_length)
     sender_qkd(host, encryption_key_binary, receiver_id)
     print('Sent all the qubits successfully!')
+
     key_to_test = encryption_key_binary[0:key_check_length]
-    check_key_sender(host, key_to_test, receiver_id)
+
+    keys_are_secure = check_key_sender(host, key_to_test, receiver_id)
+    if not keys_are_secure:
+        print(f"CRITICAL: [{host.host_id}] Protocol aborted due to key check failure.")
+        return
 
     one_time_pad_key_list = encryption_key_binary[key_check_length:]
     one_time_pad_key_string = ''.join(map(str, one_time_pad_key_list))
@@ -131,7 +136,7 @@ def quantum_receiver_protocol(host: Host, sender_id: Host.host_id, ):
 
     encrypted_message = host.get_next_classical(sender_id, wait=20)
     if encrypted_message is None:
-        print(f"Bob: Timed out waiting for the final message.")
+        print(f"Bob: Timed out waiting for the final message. The sender may have aborted.")
         return None
 
     ciphertext_binary = encrypted_message.content
