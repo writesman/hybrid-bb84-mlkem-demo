@@ -7,7 +7,7 @@ from math import ceil
 from b92_protocol import generate_key, sender_qkd, receiver_qkd, check_key_sender, check_key_receiver
 
 
-def classical_sender_protocol(host: Host, receiver_id: Host.host_id, message, ):
+def classical_sender_protocol(host: Host, receiver_id: Host.host_id, message: str, kem_instance):
     public_key_obj = host.get_next_classical(receiver_id, wait=20)
     if public_key_obj is None:
         print(f"ERROR: [{host.host_id}] timed out waiting for public key from [{receiver_id}].")
@@ -16,7 +16,7 @@ def classical_sender_protocol(host: Host, receiver_id: Host.host_id, message, ):
     print(f"3. {host.host_id}: Received public key from {receiver_id}")
 
     print(f"4. {host.host_id}: Generating ciphertext")
-    ciphertext, shared_secret = kem.encaps(public_key)
+    ciphertext, shared_secret = kem_instance.encaps(public_key)
 
     print(f"Ciphertext: {ciphertext}")
 
@@ -33,9 +33,9 @@ def classical_sender_protocol(host: Host, receiver_id: Host.host_id, message, ):
     host.send_classical(receiver_id, encrypted_message, await_ack=True)
 
 
-def classical_receiver_protocol(host: Host, sender_id: Host.host_id, ):
+def classical_receiver_protocol(host: Host, sender_id: Host.host_id, kem_instance):
     print(f"1. {host.host_id}: Generating public and secret key.")
-    public_key, secret_key = kem.keygen()
+    public_key, secret_key = kem_instance.keygen()
 
     print(f"2. {host.host_id}: Sending public key to {sender_id}.")
     host.send_classical(sender_id, public_key, await_ack=True)
@@ -47,7 +47,7 @@ def classical_receiver_protocol(host: Host, sender_id: Host.host_id, ):
     ciphertext = ciphertext_obj.content
     print(f"5. {host.host_id}: Received ciphertext from {sender_id}.")
 
-    shared_secret = kem.decaps(secret_key, ciphertext)
+    shared_secret = kem_instance.decaps(secret_key, ciphertext)
 
     raw_key = hashlib.sha256(shared_secret).digest()
     fernet_key = base64.urlsafe_b64encode(raw_key)
@@ -154,16 +154,16 @@ def quantum_receiver_protocol(host: Host, sender_id: Host.host_id, ):
     return decrypted_message
 
 
-def middleware_classical_to_quantum(host: Host, classical_id: Host.host_id, quantum_id: Host.host_id):
-    message = classical_receiver_protocol(host, classical_id)
+def middleware_classical_to_quantum(host: Host, classical_id: Host.host_id, quantum_id: Host.host_id, kem_instance):
+    message = classical_receiver_protocol(host, classical_id, kem_instance)
     if message:
         quantum_sender_protocol(host, quantum_id, message)
 
 
-def middleware_quantum_to_classical(host: Host, classical_id: Host.host_id, quantum_id: Host.host_id):
+def middleware_quantum_to_classical(host: Host, classical_id: Host.host_id, quantum_id: Host.host_id, kem_instance):
     message = quantum_receiver_protocol(host, quantum_id)
     if message:
-        classical_sender_protocol(host, classical_id, message)
+        classical_sender_protocol(host, classical_id, message, kem_instance)
 
 
 if __name__ == '__main__':
@@ -190,9 +190,9 @@ if __name__ == '__main__':
 
     message = "He"
 
-    thread_1 = host_classical.run_protocol(classical_sender_protocol, (host_middleware.host_id, message,))
+    thread_1 = host_classical.run_protocol(classical_sender_protocol, (host_middleware.host_id, message, kem))
     thread_2 = host_middleware.run_protocol(middleware_classical_to_quantum,
-                                            (host_classical.host_id, host_quantum.host_id))
+                                            (host_classical.host_id, host_quantum.host_id, kem))
     thread_3 = host_quantum.run_protocol(quantum_receiver_protocol, (host_middleware.host_id,))
 
     thread_1.join()
