@@ -10,7 +10,7 @@ NETWORK_TIMEOUT = 20
 QKD_CHECK_RATIO = 0.5
 
 
-def classical_sender_protocol(host: Host, receiver_id: Host.host_id, message: str, kem_instance):
+def classical_sender_protocol(host: Host, receiver_id: Host.host_id, message: str, kem):
     public_key_obj = host.get_next_classical(receiver_id, wait=NETWORK_TIMEOUT)
     if public_key_obj is None:
         print(f"ERROR: [{host.host_id}] timed out waiting for public key from [{receiver_id}].")
@@ -19,7 +19,7 @@ def classical_sender_protocol(host: Host, receiver_id: Host.host_id, message: st
     print(f"[{host.host_id}] Received public key from [{receiver_id}].")
 
     print(f"[{host.host_id}] Generated KEM ciphertext and shared secret.")
-    ciphertext, shared_secret = kem_instance.encaps(public_key)
+    ciphertext, shared_secret = kem.encaps(public_key)
 
     print(f"[{host.host_id}] Sending KEM ciphertext to [{receiver_id}].")
     host.send_classical(receiver_id, ciphertext, await_ack=True)
@@ -34,21 +34,21 @@ def classical_sender_protocol(host: Host, receiver_id: Host.host_id, message: st
     host.send_classical(receiver_id, encrypted_message, await_ack=True)
 
 
-def classical_receiver_protocol(host: Host, sender_id: Host.host_id, kem_instance):
+def classical_receiver_protocol(host: Host, sender_id: Host.host_id, kem):
     print(f"[{host.host_id}] Generated KEM key pair.")
-    public_key, secret_key = kem_instance.keygen()
+    public_key, secret_key = kem.keygen()
 
     print(f"[{host.host_id}] Sending public key to [{sender_id}].")
     host.send_classical(sender_id, public_key, await_ack=True)
 
-    ciphertext_obj = host.get_next_classical(sender_id, wait=NETWORK_TIMEOUT)
+    ciphertext_obj = host.get_next_classical(sender_id, wait=-1)
     if ciphertext_obj is None:
         print(f"ERROR: [{host.host_id}] timed out waiting for ciphertext from [{sender_id}].")
         return None
     ciphertext = ciphertext_obj.content
     print(f"[{host.host_id}] Received KEM ciphertext from [{sender_id}].")
 
-    shared_secret = kem_instance.decaps(secret_key, ciphertext)
+    shared_secret = kem.decaps(secret_key, ciphertext)
 
     raw_key = hashlib.sha256(shared_secret).digest()
     fernet_key = base64.urlsafe_b64encode(raw_key)
@@ -87,7 +87,7 @@ def binary_to_text(binary_string: str) -> str:
     return bytes(byte_list).decode('utf-8', 'ignore')
 
 
-def quantum_sender_protocol(host: Host, receiver_id: Host.host_id, message, ):
+def quantum_sender_protocol(host: Host, receiver_id: Host.host_id, message: str):
     message_binary = ''.join(format(byte, '08b') for byte in message.encode())
 
     key_check_length = ceil(len(message_binary) * QKD_CHECK_RATIO)
@@ -117,7 +117,7 @@ def quantum_sender_protocol(host: Host, receiver_id: Host.host_id, message, ):
     host.send_classical(receiver_id, ciphertext_binary, await_ack=True)
 
 
-def quantum_receiver_protocol(host: Host, sender_id: Host.host_id, ):
+def quantum_receiver_protocol(host: Host, sender_id: Host.host_id):
     key_info_obj = host.get_next_classical(sender_id, wait=NETWORK_TIMEOUT)
     if key_info_obj is None:
         print(f"ERROR: [{host.host_id}] timed out waiting for key info from [{sender_id}].")
@@ -190,18 +190,37 @@ if __name__ == '__main__':
 
     network.add_hosts([host_classical, host_middleware, host_quantum])
 
-    message = "Test"
-    print(f"## Starting simulation with message: '{message}' ##\n")
+    # # SIMULATION 1: CLASSICAL TO QUANTUM
+    print(f"## Starting Classical-to-Quantum simulation... ##")
 
-    thread_1 = host_classical.run_protocol(classical_sender_protocol, (host_middleware.host_id, message, kem))
-    thread_2 = host_middleware.run_protocol(middleware_classical_to_quantum,
-                                            (host_classical.host_id, host_quantum.host_id, kem))
-    thread_3 = host_quantum.run_protocol(quantum_receiver_protocol, (host_middleware.host_id,))
+    c2q_message = "Hello Quantum!"
 
-    thread_1.join()
-    thread_2.join()
-    thread_3.join()
+    thread_c2q_classical = host_classical.run_protocol(classical_sender_protocol, (host_middleware.host_id, c2q_message, kem))
+    thread_c2q_middleware = host_middleware.run_protocol(middleware_classical_to_quantum,
+                                                         (host_classical.host_id, host_quantum.host_id, kem))
+    thread_c2q_quantum = host_quantum.run_protocol(quantum_receiver_protocol, (host_middleware.host_id,))
 
-    print("\n## Simulation Complete ##")
+    thread_c2q_classical.join()
+    thread_c2q_middleware.join()
+    thread_c2q_quantum.join()
+
+    print("## Classical-to-Quantum Simulation Complete ##")
+
+    # SIMULATION 2: QUANTUM TO CLASSICAL
+    print(f"## Starting Quantum-to-Classical simulation... ##")
+
+    q2c_message = "Hello Classical!"
+
+    # The roles are now reversed
+    thread_q2c_quantum = host_quantum.run_protocol(quantum_sender_protocol, (host_middleware.host_id, q2c_message))
+    thread_q2c_middleware = host_middleware.run_protocol(middleware_quantum_to_classical,
+                                                         (host_classical.host_id, host_quantum.host_id, kem))
+    thread_q2c_classical = host_classical.run_protocol(classical_receiver_protocol, (host_middleware.host_id, kem))
+
+    thread_q2c_quantum.join()
+    thread_q2c_middleware.join()
+    thread_q2c_classical.join()
+
+    print("## Quantum-to-Classical Simulation Complete ##")
 
     network.stop()
