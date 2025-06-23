@@ -11,10 +11,13 @@ def classical_sender_protocol(host: Host, receiver_id: Host.host_id, message, ):
     public_key = host.get_next_classical(receiver_id, wait=-1).content
     print(f"3. {host.host_id}: Received public key from {receiver_id}")
 
-    cipher_text, shared_secret = kem.encaps(public_key)
+    print(f"4. {host.host_id}: Generating ciphertext")
+    ciphertext, shared_secret = kem.encaps(public_key)
+
+    print(f"Ciphertext: {ciphertext}")
 
     print(f"4. {host.host_id}: Sending ciphertext to {receiver_id}")
-    host.send_classical(receiver_id, cipher_text, await_ack=True)
+    host.send_classical(receiver_id, ciphertext, await_ack=True)
 
     raw_key = hashlib.sha256(shared_secret).digest()
     fernet_key = base64.urlsafe_b64encode(raw_key)
@@ -29,6 +32,8 @@ def classical_sender_protocol(host: Host, receiver_id: Host.host_id, message, ):
 def classical_receiver_protocol(host: Host, sender_id: Host.host_id, ):
     print(f"1. {host.host_id}: Generating public and secret key.")
     public_key, secret_key = kem.keygen()
+
+    print(f"Public key: {public_key}\nSecret key: {secret_key}")
 
     print(f"2. {host.host_id}: Sending public key to {sender_id}.")
     host.send_classical(sender_id, public_key, await_ack=True)
@@ -128,6 +133,16 @@ def quantum_receiver_protocol(host: Host, sender_id: Host.host_id, ):
     return decrypted_message
 
 
+def middleware_classical_to_quantum(host: Host, classical_id: Host.host_id, quantum_id: Host.host_id):
+    message = classical_receiver_protocol(host, classical_id)
+    quantum_sender_protocol(host, quantum_id, message)
+
+
+def middleware_quantum_to_classical(host: Host, classical_id: Host.host_id, quantum_id: Host.host_id):
+    message = quantum_receiver_protocol(host, quantum_id)
+    classical_sender_protocol(host, classical_id, message)
+
+
 if __name__ == '__main__':
     kem = MLKEM_1024()
 
@@ -152,17 +167,14 @@ if __name__ == '__main__':
 
     message = "He"
 
-    thread_1 = host_quantum.run_protocol(quantum_sender_protocol, (host_middleware.host_id, message,))
-    thread_2 = host_middleware.run_protocol(quantum_receiver_protocol, (host_quantum.host_id,))
+    thread_1 = host_classical.run_protocol(classical_sender_protocol, (host_middleware.host_id, message,))
+    thread_2 = host_middleware.run_protocol(middleware_classical_to_quantum,
+                                            (host_classical.host_id, host_quantum.host_id))
+    thread_3 = host_quantum.run_protocol(quantum_receiver_protocol, (host_middleware.host_id,))
 
     thread_1.join()
     thread_2.join()
-
-    # thread_1 = host_classical.run_protocol(classical_sender_protocol, (host_middleware.host_id, message,))
-    # thread_2 = host_middleware.run_protocol(classical_receiver_protocol, (host_classical.host_id,))
-
-    # thread_1.join()
-    # thread_2.join()
+    thread_3.join()
 
     print(message)
 
