@@ -16,14 +16,12 @@ def classical_sender_protocol(host: Host, receiver_id: Host.host_id, message: st
         print(f"ERROR: [{host.host_id}] timed out waiting for public key from [{receiver_id}].")
         return
     public_key = public_key_obj.content
-    print(f"3. {host.host_id}: Received public key from {receiver_id}")
+    print(f"[{host.host_id}] Received public key from [{receiver_id}].")
 
-    print(f"4. {host.host_id}: Generating ciphertext")
+    print(f"[{host.host_id}] Generated KEM ciphertext and shared secret.")
     ciphertext, shared_secret = kem_instance.encaps(public_key)
 
-    print(f"Ciphertext: {ciphertext}")
-
-    print(f"4. {host.host_id}: Sending ciphertext to {receiver_id}")
+    print(f"[{host.host_id}] Sending KEM ciphertext to [{receiver_id}].")
     host.send_classical(receiver_id, ciphertext, await_ack=True)
 
     raw_key = hashlib.sha256(shared_secret).digest()
@@ -32,15 +30,15 @@ def classical_sender_protocol(host: Host, receiver_id: Host.host_id, message: st
 
     encrypted_message = sender_fernet.encrypt(message.encode())
 
-    print(f"6. {host.host_id}: Sending encrypted message to {receiver_id}")
+    print(f"[{host.host_id}] Sending Fernet-encrypted message to [{receiver_id}].")
     host.send_classical(receiver_id, encrypted_message, await_ack=True)
 
 
 def classical_receiver_protocol(host: Host, sender_id: Host.host_id, kem_instance):
-    print(f"1. {host.host_id}: Generating public and secret key.")
+    print(f"[{host.host_id}] Generated KEM key pair.")
     public_key, secret_key = kem_instance.keygen()
 
-    print(f"2. {host.host_id}: Sending public key to {sender_id}.")
+    print(f"[{host.host_id}] Sending public key to [{sender_id}].")
     host.send_classical(sender_id, public_key, await_ack=True)
 
     ciphertext_obj = host.get_next_classical(sender_id, wait=NETWORK_TIMEOUT)
@@ -48,7 +46,7 @@ def classical_receiver_protocol(host: Host, sender_id: Host.host_id, kem_instanc
         print(f"ERROR: [{host.host_id}] timed out waiting for ciphertext from [{sender_id}].")
         return None
     ciphertext = ciphertext_obj.content
-    print(f"5. {host.host_id}: Received ciphertext from {sender_id}.")
+    print(f"[{host.host_id}] Received KEM ciphertext from [{sender_id}].")
 
     shared_secret = kem_instance.decaps(secret_key, ciphertext)
 
@@ -61,11 +59,11 @@ def classical_receiver_protocol(host: Host, sender_id: Host.host_id, kem_instanc
         print(f"ERROR: [{host.host_id}] timed out waiting for encrypted message from [{sender_id}].")
         return None
     encrypted_message = encrypted_message_obj.content
-    print(f"7. {host.host_id}: Received encrypted message from {sender_id}.")
+    print(f"[{host.host_id}] Received Fernet-encrypted message from [{sender_id}].")
 
     decrypted_message = receiver_fernet.decrypt(encrypted_message).decode()
 
-    print(f"Decrypted classical message: {decrypted_message}")
+    print(f"[{host.host_id}] Successfully decrypted classical message: '{decrypted_message}'")
 
     return decrypted_message
 
@@ -96,11 +94,12 @@ def quantum_sender_protocol(host: Host, receiver_id: Host.host_id, message, ):
     key_length = len(message_binary) + key_check_length
 
     key_info_message = f"KEY_INFO:{key_length}:{key_check_length}"
+    print(f"[{host.host_id}] Announcing QKD parameters to [{receiver_id}]: {key_info_message}")
     host.send_classical(receiver_id, key_info_message, await_ack=True)
 
     encryption_key_binary = generate_key(key_length)
     sender_qkd(host, encryption_key_binary, receiver_id)
-    print('Sent all the qubits successfully!')
+    print(f"[{host.host_id}] All QKD qubits sent to [{receiver_id}].")
 
     key_to_test = encryption_key_binary[0:key_check_length]
 
@@ -114,8 +113,7 @@ def quantum_sender_protocol(host: Host, receiver_id: Host.host_id, message, ):
 
     ciphertext_binary = apply_one_time_pad(message_binary, one_time_pad_key_string)
 
-    print(f"encrypted message: {ciphertext_binary} {binary_to_text(ciphertext_binary)}")
-
+    print(f"[{host.host_id}] Encrypted message with one-time pad, sending to [{receiver_id}].")
     host.send_classical(receiver_id, ciphertext_binary, await_ack=True)
 
 
@@ -133,6 +131,7 @@ def quantum_receiver_protocol(host: Host, sender_id: Host.host_id, ):
     parts = content.split(':')
     key_length = int(parts[1])
     key_check_length = int(parts[2])
+    print(f"[{host.host_id}] Received QKD parameters from [{sender_id}].")
 
     secret_key_bob = receiver_qkd(host, key_length, sender_id)
     key_to_test = secret_key_bob[0:key_check_length]
@@ -140,7 +139,7 @@ def quantum_receiver_protocol(host: Host, sender_id: Host.host_id, ):
 
     encrypted_message = host.get_next_classical(sender_id, wait=NETWORK_TIMEOUT)
     if encrypted_message is None:
-        print(f"Bob: Timed out waiting for the final message. The sender may have aborted.")
+        print(f"[{host.host_id}] Timed out waiting for final message from [{sender_id}]. Sender may have aborted.")
         return None
 
     ciphertext_binary = encrypted_message.content
@@ -150,10 +149,9 @@ def quantum_receiver_protocol(host: Host, sender_id: Host.host_id, ):
     one_time_pad_key_string = ''.join(map(str, one_time_pad_key_list))
 
     decrypted_binary = apply_one_time_pad(ciphertext_binary, one_time_pad_key_string)
-
     decrypted_message = binary_to_text(decrypted_binary)
 
-    print(f'Bob\'s decrypted message is: {decrypted_binary} {decrypted_message}')
+    print(f"[{host.host_id}] Successfully decrypted quantum message: '{decrypted_message}'")
 
     return decrypted_message
 
@@ -192,7 +190,8 @@ if __name__ == '__main__':
 
     network.add_hosts([host_classical, host_middleware, host_quantum])
 
-    message = "He"
+    message = "Test"
+    print(f"## Starting simulation with message: '{message}' ##\n")
 
     thread_1 = host_classical.run_protocol(classical_sender_protocol, (host_middleware.host_id, message, kem))
     thread_2 = host_middleware.run_protocol(middleware_classical_to_quantum,
@@ -203,6 +202,6 @@ if __name__ == '__main__':
     thread_2.join()
     thread_3.join()
 
-    print(message)
+    print("\n## Simulation Complete ##")
 
     network.stop()
