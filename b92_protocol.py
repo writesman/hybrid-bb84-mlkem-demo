@@ -75,13 +75,15 @@ def sender_qkd(alice, secret_key, receiver):
             # If we want to send 0, we'll send |0>
             # If we want to send 1, we'll send |+>
             alice.send_qubit(receiver, qubit, await_ack=True)
-            message = alice.get_next_classical(receiver, wait=-1)
+            message = alice.get_next_classical(receiver, wait=20)  # Changed wait time
             if message is not None:
                 if message.content == 'qubit successfully acquired':
                     print(f'Alice sent qubit {sent_qubit_counter + 1} to Bob')
                     success = True
                     sent_qubit_counter += 1
-                # if, however, message says Bob failed to measure the qubit, Alice will resend it.
+            else:
+                print(f"[{alice.host_id}] Timed out waiting for ACK on qubit {sent_qubit_counter + 1}. Resending.")
+                # The loop will continue, causing a resend.
 
 
 def receiver_qkd(bob, key_size, sender):
@@ -115,25 +117,33 @@ def check_key_sender(alice, key_check_alice, receiver):
     key_check_string = ''.join([str(x) for x in key_check_alice])
     print(f'Alice\'s key to check is {key_check_string}')
     alice.send_classical(receiver, key_check_string, await_ack=True)
-    message_from_bob = alice.get_next_classical(receiver, wait=-1)
-    # Bob tells Alice whether the key part is the same at his end.
-    # If not - it means Eve eavesdropped.
-    if message_from_bob is not None:
-        if message_from_bob.content == 'Success':
-            print('Key is successfully verified')
-        elif message_from_bob.content == 'Fail':
-            print('Key has been corrupted')
+
+    message_from_bob = alice.get_next_classical(receiver, wait=20)
+    if message_from_bob is None:
+        print(f"Alice timed out waiting for key verification from Bob")
+        return False
+
+    if message_from_bob.content == 'Success':
+        print('Key is successfully verified')
+        return True
+    else:
+        print('Key has been corrupted')
+        return False
 
 
 def check_key_receiver(bob, key_check_bob, sender):
     key_check_bob_string = ''.join([str(x) for x in key_check_bob])
     print(f'Bob\'s key to check is {key_check_bob_string}')
-    key_from_alice = bob.get_next_classical(sender, wait=-1)
-    if key_from_alice is not None:
-        if key_from_alice.content == key_check_bob_string:
-            bob.send_classical(sender, 'Success', await_ack=True)
-        else:
-            bob.send_classical(sender, 'Fail', await_ack=True)
+
+    key_from_alice_obj = bob.get_next_classical(sender, wait=20)
+    if key_from_alice_obj is None:
+        print(f"[{bob.host_id}] Timed out waiting for key check from [{sender}]")
+        return
+
+    if key_from_alice_obj.content == key_check_bob_string:
+        bob.send_classical(sender, 'Success', await_ack=True)
+    else:
+        bob.send_classical(sender, 'Fail', await_ack=True)
 
 
 def alice_func(host, bob_id, length_of_check, key_length):
