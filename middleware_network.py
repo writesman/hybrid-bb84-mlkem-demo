@@ -8,7 +8,11 @@ from b92_protocol import generate_key, sender_qkd, receiver_qkd, check_key_sende
 
 
 def classical_sender_protocol(host: Host, receiver_id: Host.host_id, message, ):
-    public_key = host.get_next_classical(receiver_id, wait=-1).content
+    public_key_obj = host.get_next_classical(receiver_id, wait=20)
+    if public_key_obj is None:
+        print(f"ERROR: [{host.host_id}] timed out waiting for public key from [{receiver_id}].")
+        return
+    public_key = public_key_obj.content
     print(f"3. {host.host_id}: Received public key from {receiver_id}")
 
     print(f"4. {host.host_id}: Generating ciphertext")
@@ -33,12 +37,14 @@ def classical_receiver_protocol(host: Host, sender_id: Host.host_id, ):
     print(f"1. {host.host_id}: Generating public and secret key.")
     public_key, secret_key = kem.keygen()
 
-    print(f"Public key: {public_key}\nSecret key: {secret_key}")
-
     print(f"2. {host.host_id}: Sending public key to {sender_id}.")
     host.send_classical(sender_id, public_key, await_ack=True)
 
-    ciphertext = host.get_next_classical(sender_id, wait=-1).content
+    ciphertext_obj = host.get_next_classical(sender_id, wait=20)
+    if ciphertext_obj is None:
+        print(f"ERROR: [{host.host_id}] timed out waiting for ciphertext from [{sender_id}].")
+        return None
+    ciphertext = ciphertext_obj.content
     print(f"5. {host.host_id}: Received ciphertext from {sender_id}.")
 
     shared_secret = kem.decaps(secret_key, ciphertext)
@@ -47,7 +53,11 @@ def classical_receiver_protocol(host: Host, sender_id: Host.host_id, ):
     fernet_key = base64.urlsafe_b64encode(raw_key)
     receiver_fernet = Fernet(fernet_key)
 
-    encrypted_message = host.get_next_classical(sender_id, wait=-1).content
+    encrypted_message_obj = host.get_next_classical(sender_id, wait=20)
+    if encrypted_message_obj is None:
+        print(f"ERROR: [{host.host_id}] timed out waiting for encrypted message from [{sender_id}].")
+        return None
+    encrypted_message = encrypted_message_obj.content
     print(f"7. {host.host_id}: Received encrypted message from {sender_id}.")
 
     decrypted_message = receiver_fernet.decrypt(encrypted_message).decode()
@@ -71,11 +81,8 @@ def apply_one_time_pad(binary_input: str, key: str) -> str:
 
 
 def binary_to_text(binary_string: str) -> str:
-    # Split the binary string into 8-bit chunks (bytes)
     byte_chunks = [binary_string[i:i + 8] for i in range(0, len(binary_string), 8)]
-    # Convert each binary chunk into its integer value
     byte_list = [int(chunk, 2) for chunk in byte_chunks]
-    # Decode the list of byte values into a string
     return bytes(byte_list).decode('utf-8', 'ignore')
 
 
@@ -106,17 +113,26 @@ def quantum_sender_protocol(host: Host, receiver_id: Host.host_id, message, ):
 
 
 def quantum_receiver_protocol(host: Host, sender_id: Host.host_id, ):
-    key_check_length = host.get_next_classical(sender_id, wait=-1).content
-    key_length = host.get_next_classical(sender_id, wait=-1).content
+    key_check_length_obj = host.get_next_classical(sender_id, wait=20)
+    if key_check_length_obj is None:
+        print(f"ERROR: [{host.host_id}] timed out waiting for key check length from [{sender_id}].")
+        return None
+    key_check_length = key_check_length_obj.content
+
+    key_length_obj = host.get_next_classical(sender_id, wait=20)
+    if key_length_obj is None:
+        print(f"ERROR: [{host.host_id}] timed out waiting for key length from [{sender_id}].")
+        return None
+    key_length = key_length_obj.content
 
     secret_key_bob = receiver_qkd(host, key_length, sender_id)
     key_to_test = secret_key_bob[0:key_check_length]
     check_key_receiver(host, key_to_test, sender_id)
 
-    encrypted_message = host.get_next_classical(sender_id)
+    encrypted_message = host.get_next_classical(sender_id, wait=20)
     if encrypted_message is None:
-        print("Bob: Timed out waiting for the final message.")
-        return
+        print(f"Bob: Timed out waiting for the final message.")
+        return None
 
     ciphertext_binary = encrypted_message.content
 
@@ -135,12 +151,14 @@ def quantum_receiver_protocol(host: Host, sender_id: Host.host_id, ):
 
 def middleware_classical_to_quantum(host: Host, classical_id: Host.host_id, quantum_id: Host.host_id):
     message = classical_receiver_protocol(host, classical_id)
-    quantum_sender_protocol(host, quantum_id, message)
+    if message:
+        quantum_sender_protocol(host, quantum_id, message)
 
 
 def middleware_quantum_to_classical(host: Host, classical_id: Host.host_id, quantum_id: Host.host_id):
     message = quantum_receiver_protocol(host, quantum_id)
-    classical_sender_protocol(host, classical_id, message)
+    if message:
+        classical_sender_protocol(host, classical_id, message)
 
 
 if __name__ == '__main__':
