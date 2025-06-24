@@ -4,10 +4,103 @@ from cryptography.fernet import Fernet
 import hashlib
 import base64
 from math import ceil
-from b92_protocol import generate_key, sender_qkd, receiver_qkd, check_key_sender, check_key_receiver
+from qunetsim.objects import Qubit
+from qunetsim.objects import Logger
+from random import randint, random
 
+Logger.DISABLED = True
 NETWORK_TIMEOUT = 20
 QKD_CHECK_RATIO = 0.5
+
+
+def generate_key(key_length):
+    generated_key = []
+    for i in range(key_length):
+        generated_key.append(randint(0, 1))
+    print(f'Generated the key {generated_key}')
+    return generated_key
+
+
+def sender_qkd(alice, secret_key, receiver):
+    sent_qubit_counter = 0
+    for bit in secret_key:
+        success = False
+        while success == False:
+            qubit = Qubit(alice)
+            if bit == 1:
+                qubit.H()
+            # If we want to send 0, we'll send |0>
+            # If we want to send 1, we'll send |+>
+            alice.send_qubit(receiver, qubit, await_ack=True)
+            message = alice.get_next_classical(receiver, wait=20)  # Changed wait time
+            if message is not None:
+                if message.content == 'qubit successfully acquired':
+                    print(f'Alice sent qubit {sent_qubit_counter + 1} to Bob')
+                    success = True
+                    sent_qubit_counter += 1
+            else:
+                print(f"[{alice.host_id}] Timed out waiting for ACK on qubit {sent_qubit_counter + 1}. Resending.")
+                # The loop will continue, causing a resend.
+
+
+def receiver_qkd(bob, key_size, sender):
+    key_array = []
+    received_counter = 0
+    # counts the key bits successfully measured by Bob
+    while received_counter < key_size:
+        base = randint(0, 1)
+        # 0 means rectilinear basis and 1 means diagonal basis
+        qubit = bob.get_qubit(sender, wait=NETWORK_TIMEOUT)
+        if qubit is not None:
+            if base == 1:
+                qubit.H()
+            bit = qubit.measure()
+            if bit == 1:
+                if base == 1:
+                    resulting_key_bit = 0
+                elif base == 0:
+                    resulting_key_bit = 1
+                message_to_send = 'qubit successfully acquired'
+                key_array.append(resulting_key_bit)
+                received_counter += 1
+                print(f'Bob received qubit {received_counter}')
+            else:
+                message_to_send = 'fail'
+            bob.send_classical(sender, message_to_send, await_ack=True)
+    return key_array
+
+
+def check_key_sender(alice, key_check_alice, receiver):
+    key_check_string = ''.join([str(x) for x in key_check_alice])
+    print(f'Alice\'s key to check is {key_check_string}')
+    alice.send_classical(receiver, key_check_string, await_ack=True)
+
+    message_from_bob = alice.get_next_classical(receiver, wait=20)
+    if message_from_bob is None:
+        print(f"Alice timed out waiting for key verification from Bob")
+        return False
+
+    if message_from_bob.content == 'Success':
+        print('Key is successfully verified')
+        return True
+    else:
+        print('Key has been corrupted')
+        return False
+
+
+def check_key_receiver(bob, key_check_bob, sender):
+    key_check_bob_string = ''.join([str(x) for x in key_check_bob])
+    print(f'Bob\'s key to check is {key_check_bob_string}')
+
+    key_from_alice_obj = bob.get_next_classical(sender, wait=20)
+    if key_from_alice_obj is None:
+        print(f"[{bob.host_id}] Timed out waiting for key check from [{sender}]")
+        return
+
+    if key_from_alice_obj.content == key_check_bob_string:
+        bob.send_classical(sender, 'Success', await_ack=True)
+    else:
+        bob.send_classical(sender, 'Fail', await_ack=True)
 
 
 def classical_sender_protocol(host: Host, receiver_id: Host.host_id, message: str, kem):
@@ -195,7 +288,8 @@ if __name__ == '__main__':
 
     c2q_message = "Hello Quantum!"
 
-    thread_c2q_classical = host_classical.run_protocol(classical_sender_protocol, (host_middleware.host_id, c2q_message, kem))
+    thread_c2q_classical = host_classical.run_protocol(classical_sender_protocol,
+                                                       (host_middleware.host_id, c2q_message, kem))
     thread_c2q_middleware = host_middleware.run_protocol(middleware_classical_to_quantum,
                                                          (host_classical.host_id, host_quantum.host_id, kem))
     thread_c2q_quantum = host_quantum.run_protocol(quantum_receiver_protocol, (host_middleware.host_id,))
