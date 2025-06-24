@@ -106,16 +106,28 @@ def e91_sift_and_test(host: Host, partner_id: str, my_bases: list, my_meas: list
         bases_a = their_bases
         bases_b = my_bases
 
-    # Step 2: Identify key qubits and test qubits
+    # Step 2: Sift key and categorize test cases for CHSH
     sifted_key_indices = []
-    test_indices = []
-    for i in range(min(len(bases_a), len(bases_b))):
-        if np.isclose(bases_a[i], np.pi/4) and np.isclose(bases_b[i], np.pi/4):
-            sifted_key_indices.append(i)
-        else:
-            test_indices.append(i)
+    chsh_bins = {
+        (0, 0): [], (0, 1): [],
+        (1, 0): [], (1, 1): []
+    }
 
-    # Step 3: Exchange measurement outcomes ONLY for test qubits
+    alice_map = {0: 0, np.pi / 4: 1}
+    bob_map = {np.pi / 4: 0, np.pi / 2: 1}
+
+    for i in range(min(len(bases_a), len(bases_b))):
+        try:
+            a_idx = alice_map[bases_a[i]]
+            b_idx = bob_map[bases_b[i]]
+            chsh_bins[(a_idx, b_idx)].append(i)
+        except KeyError:
+            continue
+
+    sifted_key_indices = chsh_bins[(1, 0)]
+
+    # Step 3: Exchange measurement outcomes for test qubits
+    test_indices = chsh_bins[(0, 0)] + chsh_bins[(0, 1)] + chsh_bins[(1, 1)]
     my_test_meas = {i: my_meas[i] for i in test_indices}
     if is_initiator:
         host.send_classical(partner_id, my_test_meas, await_ack=True)
@@ -131,21 +143,29 @@ def e91_sift_and_test(host: Host, partner_id: str, my_bases: list, my_meas: list
     test_meas_a = my_test_meas if is_initiator else their_test_meas
     test_meas_b = their_test_meas if is_initiator else my_test_meas
 
-    # Step 4: Perform Bell Test
-    if not test_indices:
-        print(f"[{host.host_id}] No cases available for Bell test. Aborting.")
-        return None
+    # Step 4: Perform CHSH Test
+    E = {}
+    for a_idx, b_idx in chsh_bins:
+        indices = chsh_bins[(a_idx, b_idx)]
+        if not indices:
+            E[(a_idx, b_idx)] = 0
+            continue
 
-    correlation = sum(1 for i in test_indices if test_meas_a.get(i) == test_meas_b.get(i))
-    correlation_ratio = correlation / len(test_indices)
+        # Use the publicly revealed test measurements for the calculation
+        num_same = sum(1 for i in indices if (test_meas_a.get(i) == test_meas_b.get(i)))
+        num_diff = len(indices) - num_same
+        E[(a_idx, b_idx)] = (num_same - num_diff) / len(indices)
 
-    # In an ideal simulation, a correlation ratio of 1.0 is suspicious, as test bases should differ.
-    if correlation_ratio < 0.9:
-        print(f"[{host.host_id}] Bell test PASSED. Correlation ratio is {correlation_ratio:.3f}.")
+    S = E[(0, 0)] - E[(0, 1)] + E[(1, 0)] + E[(1, 1)]
+    print(f"[{host.host_id}] CHSH S-value: {S:.4f} (Classical limit is 2, Quantum max is {2 * np.sqrt(2):.4f})")
+
+    if abs(S) > 2.0:
+        print(f"[{host.host_id}] Bell test PASSED. Entanglement confirmed.")
+        # Key is constructed from the measurements that were kept secret
         final_key = "".join([str(my_meas[i]) for i in sifted_key_indices])
         return final_key
     else:
-        print(f"[{host.host_id}] Bell test FAILED. Suspiciously high correlation: {correlation_ratio:.3f}.")
+        print(f"[{host.host_id}] Bell test FAILED. No quantum advantage detected.")
         return None
 
 
@@ -154,7 +174,7 @@ def quantum_sender_protocol(host: Host, receiver_id: Host.host_id, message: str)
     required_key_len = len(message_binary)
     num_pairs = ceil(required_key_len * QKD_QUBIT_RATIO)
 
-    host.send_classical(receiver_id, num_pairs, await_ack=True)
+    host.send_classical(receiver_id, str(num_pairs), await_ack=True)
     print(f"[{host.host_id}] Establishing {num_pairs} EPR pairs with [{receiver_id}].")
 
     epr_ids = []
@@ -162,7 +182,7 @@ def quantum_sender_protocol(host: Host, receiver_id: Host.host_id, message: str)
         epr_id, _ = host.send_epr(receiver_id, await_ack=True)
         epr_ids.append(epr_id)
 
-    bases_a = [random.choice([0, np.pi/4]) for _ in range(num_pairs)]
+    bases_a = [random.choice([0, np.pi / 4]) for _ in range(num_pairs)]
     meas_a = []
     for i in range(num_pairs):
         q = host.get_epr(receiver_id, epr_ids[i])
@@ -187,7 +207,7 @@ def quantum_receiver_protocol(host: Host, sender_id: Host.host_id):
     num_pairs = int(msg.content)
     print(f"[{host.host_id}] Awaiting {num_pairs} EPR pairs from [{sender_id}].")
 
-    bases_b = [random.choice([np.pi/4, np.pi/2]) for _ in range(num_pairs)]
+    bases_b = [random.choice([np.pi / 4, np.pi / 2]) for _ in range(num_pairs)]
     meas_b = []
     for _ in range(num_pairs):
         q = host.get_epr(sender_id, wait=NETWORK_TIMEOUT)
@@ -246,11 +266,11 @@ if __name__ == '__main__':
     network.add_hosts([host_classical, host_middleware, host_quantum])
 
     print(f"## Starting Classical-to-Quantum simulation... ##")
-    c2q_message = "He!"
+    c2q_message = "Hello Quantum!"
     thread_c2q_classical = host_classical.run_protocol(
-        classical_sender_protocol,(host_middleware.host_id, c2q_message, kem))
+        classical_sender_protocol, (host_middleware.host_id, c2q_message, kem))
     thread_c2q_middleware = host_middleware.run_protocol(
-        middleware_classical_to_quantum,(host_classical.host_id, host_quantum.host_id, kem))
+        middleware_classical_to_quantum, (host_classical.host_id, host_quantum.host_id, kem))
     thread_c2q_quantum = host_quantum.run_protocol(quantum_receiver_protocol, (host_middleware.host_id,))
     thread_c2q_classical.join()
     thread_c2q_middleware.join()
