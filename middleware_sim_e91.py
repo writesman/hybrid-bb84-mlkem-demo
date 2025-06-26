@@ -1,7 +1,6 @@
 import random
 import numpy as np
 from qunetsim.components import Host, Network
-from qunetsim.objects import Qubit
 from quantcrypt.kem import MLKEM_1024
 from cryptography.fernet import Fernet
 import hashlib
@@ -94,20 +93,21 @@ def e91_sift_and_test(host: Host, partner_id: str, my_bases: list, my_meas: list
     if is_initiator:
         host.send_classical(partner_id, my_bases, await_ack=True)
         their_bases_obj = host.get_next_classical(partner_id, wait=NETWORK_TIMEOUT)
-        if their_bases_obj is None: return None
+        if their_bases_obj is None:
+            return None
         their_bases = their_bases_obj.content
         bases_a = my_bases
         bases_b = their_bases
     else:
         their_bases_obj = host.get_next_classical(partner_id, wait=NETWORK_TIMEOUT)
-        if their_bases_obj is None: return None
+        if their_bases_obj is None:
+            return None
         their_bases = their_bases_obj.content
         host.send_classical(partner_id, my_bases, await_ack=True)
         bases_a = their_bases
         bases_b = my_bases
 
     # Step 2: Sift key and categorize test cases for CHSH
-    sifted_key_indices = []
     chsh_bins = {
         (0, 0): [], (0, 1): [],
         (1, 0): [], (1, 1): []
@@ -132,16 +132,19 @@ def e91_sift_and_test(host: Host, partner_id: str, my_bases: list, my_meas: list
     if is_initiator:
         host.send_classical(partner_id, my_test_meas, await_ack=True)
         their_test_meas_obj = host.get_next_classical(partner_id, wait=NETWORK_TIMEOUT)
-        if their_test_meas_obj is None: return None
+        if their_test_meas_obj is None:
+            return None
         their_test_meas = their_test_meas_obj.content
+        test_meas_a = my_test_meas
+        test_meas_b = their_test_meas
     else:
         their_test_meas_obj = host.get_next_classical(partner_id, wait=NETWORK_TIMEOUT)
-        if their_test_meas_obj is None: return None
+        if their_test_meas_obj is None:
+            return None
         their_test_meas = their_test_meas_obj.content
         host.send_classical(partner_id, my_test_meas, await_ack=True)
-
-    test_meas_a = my_test_meas if is_initiator else their_test_meas
-    test_meas_b = their_test_meas if is_initiator else my_test_meas
+        test_meas_a = their_test_meas
+        test_meas_b = my_test_meas
 
     # Step 4: Perform CHSH Test
     E = {}
