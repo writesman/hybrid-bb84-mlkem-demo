@@ -132,7 +132,7 @@ def classical_sender_protocol(host: Host, receiver_id: str, message: str, kem_in
 # B92 QKD Protocol Components
 # #############################################################################
 
-def send_b92_qubits(alice: Host, secret_key: str, bob_id: str):
+def b92_send_qubits(alice: Host, secret_key: str, bob_id: str):
     """
     Alice's part of the B92 QKD protocol: sends qubits based on her secret key.
     """
@@ -156,7 +156,7 @@ def send_b92_qubits(alice: Host, secret_key: str, bob_id: str):
                 print(f"[{alice.host_id}] ACK not received for qubit {sent_qubit_counter + 1}. Resending.")
 
 
-def receive_b92_qubits(bob: Host, key_size: int, alice_id: str) -> str:
+def b92_receive_qubits(bob: Host, key_size: int, alice_id: str) -> str:
     """
     Bob's part of the B92 QKD protocol: receives and measures qubits.
     """
@@ -185,7 +185,7 @@ def receive_b92_qubits(bob: Host, key_size: int, alice_id: str) -> str:
     return "".join(key_bob)
 
 
-def verify_qkd_key(host: Host, partner_id: str, key_to_check: str, is_initiator: bool) -> bool:
+def b92_verify_key(host: Host, partner_id: str, key_to_check: str, is_initiator: bool) -> bool:
     """
     A generic key verification process for QKD.
     """
@@ -228,11 +228,11 @@ def b92_sender_protocol(host: Host, receiver_id: str, message: str):
     host.send_classical(receiver_id, key_info_message, await_ack=True)
 
     full_key = generate_binary_key(total_key_length)
-    send_b92_qubits(host, full_key, receiver_id)
+    b92_send_qubits(host, full_key, receiver_id)
     print(f"[{host.host_id}] All QKD qubits sent to [{receiver_id}].")
 
     key_to_verify = full_key[:key_check_length]
-    if not verify_qkd_key(host, receiver_id, key_to_verify, is_initiator=True):
+    if not b92_verify_key(host, receiver_id, key_to_verify, is_initiator=True):
         print(f"CRITICAL: [{host.host_id}] Protocol aborted due to key check failure.")
         return
 
@@ -261,10 +261,10 @@ def b92_receiver_protocol(host: Host, sender_id: str):
     key_check_length = int(key_check_length_str)
     print(f"[{host.host_id}] Received QKD parameters from [{sender_id}].")
 
-    full_key = receive_b92_qubits(host, key_length, sender_id)
+    full_key = b92_receive_qubits(host, key_length, sender_id)
     key_to_verify = full_key[:key_check_length]
 
-    if not verify_qkd_key(host, sender_id, key_to_verify, is_initiator=False):
+    if not b92_verify_key(host, sender_id, key_to_verify, is_initiator=False):
         print(f"CRITICAL: [{host.host_id}] Protocol aborted due to key check failure.")
         return None
 
@@ -285,7 +285,7 @@ def b92_receiver_protocol(host: Host, sender_id: str):
 # E91 QKD Protocol Components
 # #############################################################################
 
-def exchange_bases(host: Host, partner_id: str, local_bases: list, is_initiator: bool):
+def e91_exchange_bases(host: Host, partner_id: str, local_bases: list, is_initiator: bool):
     """
     Exchanges measurement bases between two parties.
     """
@@ -300,7 +300,7 @@ def exchange_bases(host: Host, partner_id: str, local_bases: list, is_initiator:
         return remote_bases_obj.content, local_bases
 
 
-def perform_chsh_test(alice_bases, bob_bases, alice_meas, bob_meas):
+def e91_perform_chsh_test(alice_bases, bob_bases, alice_meas, bob_meas):
     """
     Calculates the CHSH S-value to test for entanglement.
     """
@@ -331,7 +331,7 @@ def perform_chsh_test(alice_bases, bob_bases, alice_meas, bob_meas):
     return s_value
 
 
-def extract_e91_key(local_bases, partner_bases, local_measurements):
+def e91_extract_key(local_bases, partner_bases, local_measurements):
     """
     Sifts the raw measurements to form the final key based on basis agreement.
     The key is generated when Alice uses a2 (pi/4) and Bob uses b1 (pi/4).
@@ -386,7 +386,7 @@ def e91_sender_protocol(host: Host, receiver_id: str, message: str):
             print(f"WARN: [{host.host_id}] Could not retrieve local EPR qubit for ID {epr_ids[i]}.")
 
     # Exchange bases with Bob
-    _, bases_b = exchange_bases(host, receiver_id, bases_a, is_initiator=True)
+    _, bases_b = e91_exchange_bases(host, receiver_id, bases_a, is_initiator=True)
     if bases_b is None:
         print(f"CRITICAL: [{host.host_id}] Failed to exchange bases with [{receiver_id}].")
         return
@@ -400,7 +400,7 @@ def e91_sender_protocol(host: Host, receiver_id: str, message: str):
     meas_b = meas_b_obj.content
 
     # Perform Bell Test with both sets of measurements
-    s_value = perform_chsh_test(bases_a, bases_b, meas_a, meas_b)
+    s_value = e91_perform_chsh_test(bases_a, bases_b, meas_a, meas_b)
     print(f"[{host.host_id}] Calculated CHSH S-value: {s_value:.4f}")
 
     if abs(s_value) <= 2.0:
@@ -408,7 +408,7 @@ def e91_sender_protocol(host: Host, receiver_id: str, message: str):
         return
 
     print(f"[{host.host_id}] Bell test PASSED. Entanglement confirmed.")
-    one_time_pad_key = extract_e91_key(bases_a, bases_b, meas_a)
+    one_time_pad_key = e91_extract_key(bases_a, bases_b, meas_a)
 
     if len(one_time_pad_key) < required_key_len:
         print(f"CRITICAL: [{host.host_id}] Generated key too short. Aborting.")
@@ -442,7 +442,7 @@ def e91_receiver_protocol(host: Host, sender_id: str):
             meas_b.append(q.measure())
 
     # Exchange bases with Alice
-    bases_a, _ = exchange_bases(host, sender_id, bases_b, is_initiator=False)
+    bases_a, _ = e91_exchange_bases(host, sender_id, bases_b, is_initiator=False)
     if bases_a is None:
         print(f"CRITICAL: [{host.host_id}] Failed to exchange bases with [{sender_id}].")
         return None
@@ -456,7 +456,7 @@ def e91_receiver_protocol(host: Host, sender_id: str):
     host.send_classical(sender_id, meas_b, await_ack=True)
 
     # Perform Bell Test with both sets of measurements
-    s_value = perform_chsh_test(bases_a, bases_b, meas_a, meas_b)
+    s_value = e91_perform_chsh_test(bases_a, bases_b, meas_a, meas_b)
     print(f"[{host.host_id}] Calculated CHSH S-value: {s_value:.4f}")
 
     if abs(s_value) <= 2.0:
@@ -464,7 +464,7 @@ def e91_receiver_protocol(host: Host, sender_id: str):
         return None
 
     print(f"[{host.host_id}] Bell test PASSED. Entanglement confirmed.")
-    one_time_pad_key = extract_e91_key(bases_b, bases_a, meas_b)
+    one_time_pad_key = e91_extract_key(bases_b, bases_a, meas_b)
 
     # Receive and decrypt message
     encrypted_message = host.get_next_classical(sender_id, wait=NETWORK_TIMEOUT)
