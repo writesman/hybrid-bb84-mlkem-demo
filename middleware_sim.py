@@ -10,7 +10,6 @@ from qunetsim.objects import Logger
 from random import randint
 import random
 
-from scipy.optimize import newton
 
 # #############################################################################
 # Global
