@@ -12,10 +12,10 @@ from qunetsim.objects import Logger, Qubit
 # Global Constants
 # #############################################################################
 
-Logger.DISABLED = False
+Logger.DISABLED = True
 NETWORK_TIMEOUT = 20
 QKD_CHECK_RATIO = 0.5
-QKD_QUBIT_RATIO = 5.0
+QKD_QUBIT_RATIO = 10.0
 MESSAGE_ENCODING = 'utf-8'
 
 
@@ -358,63 +358,87 @@ def e91_sender_protocol(host: Host, receiver_id: str, message: str):
     host.send_classical(receiver_id, str(num_pairs), await_ack=True)
     print(f"[{host.host_id}] Establishing {num_pairs} EPR pairs with [{receiver_id}].")
 
-    # Step 1: Create and send all EPR pairs, storing their IDs
-    epr_ids = []
+    # Step 1: Create, send, and measure all EPR pairs
+    bases_a_full = [random.choice([0, np.pi / 4]) for _ in range(num_pairs)]
+    bases_a, meas_a = [], []
+
     for i in range(num_pairs):
         epr_id, ack_received = host.send_epr(receiver_id, await_ack=True)
-        if ack_received:
-            epr_ids.append(epr_id)
-        else:
-            # Handle the case where the pair creation wasn't acknowledged
-            print(f"WARN: [{host.host_id}] Failed to get ACK for EPR pair {i + 1}, it will be skipped.")
-
-    # Abort if we couldn't create enough pairs
-    if len(epr_ids) < num_pairs:
-        print(f"CRITICAL: [{host.host_id}] Failed to establish enough EPR pairs. Aborting.")
-        host.send_classical(receiver_id, "ABORT", await_ack=True)
-        return
-
-    # Step 2: Now retrieve the local qubits by ID and measure them
-    bases_a = [random.choice([0, np.pi / 4]) for _ in range(num_pairs)]
-    meas_a = []
-    for i in range(num_pairs):
-        q = host.get_epr(receiver_id, epr_ids[i])
+        if not ack_received:
+            print(f"WARN: [{host.host_id}] Failed to get ACK for EPR pair {i + 1}, skipping.")
+            continue
+        q = host.get_epr(receiver_id, epr_id)
         if q:
-            q.ry(bases_a[i])  # Apply rotation for measurement basis
+            basis = bases_a_full[i]
+            bases_a.append(basis)
+            q.ry(basis)
             meas_a.append(q.measure())
         else:
-            print(f"WARN: [{host.host_id}] Could not retrieve local EPR qubit for ID {epr_ids[i]}.")
+            print(f"WARN: [{host.host_id}] Could not retrieve local EPR qubit for ID {epr_id}.")
 
-    # Exchange bases with Bob
+    # Update num_pairs to actual number of successful measurements
+    num_pairs = len(meas_a)
+
+    # Step 2: Exchange bases with Bob
     _, bases_b = e91_exchange_bases(host, receiver_id, bases_a, is_initiator=True)
     if bases_b is None:
         print(f"CRITICAL: [{host.host_id}] Failed to exchange bases with [{receiver_id}].")
         return
 
-    # Exchange measurement outcomes with Bob
-    host.send_classical(receiver_id, meas_a, await_ack=True)
-    meas_b_obj = host.get_next_classical(receiver_id, wait=NETWORK_TIMEOUT)
-    if not meas_b_obj:
-        print(f"CRITICAL: [{host.host_id}] Timed out waiting for partner's measurements.")
-        return
-    meas_b = meas_b_obj.content
+    # Truncate lists to the minimum common length in case of transmission failures
+    min_len = min(len(bases_a), len(bases_b), len(meas_a))
+    bases_a, bases_b, meas_a = bases_a[:min_len], bases_b[:min_len], meas_a[:min_len]
+    num_pairs = min_len
 
-    # Perform Bell Test with both sets of measurements
-    s_value = e91_perform_chsh_test(bases_a, bases_b, meas_a, meas_b)
+    if num_pairs == 0:
+        print(f"CRITICAL: [{host.host_id}] No viable qubit pairs remaining. Aborting.")
+        host.send_classical(receiver_id, "ABORT", await_ack=True)
+        return
+
+    # Step 3: Announce a random subset of qubits for the Bell Test
+    num_test_qubits = ceil(num_pairs * QKD_CHECK_RATIO)
+    all_indices = list(range(num_pairs))
+    random.shuffle(all_indices)
+    test_indices = sorted(all_indices[:num_test_qubits])
+    host.send_classical(receiver_id, test_indices, await_ack=True)
+
+    # Step 4: Exchange measurement outcomes FOR THE TEST SUBSET ONLY
+    public_meas_a = {i: meas_a[i] for i in test_indices}
+    host.send_classical(receiver_id, public_meas_a, await_ack=True)
+    public_meas_b_obj = host.get_next_classical(receiver_id, wait=NETWORK_TIMEOUT)
+    if not public_meas_b_obj:
+        print(f"CRITICAL: [{host.host_id}] Timed out waiting for partner's public measurements.")
+        return
+    public_meas_b = public_meas_b_obj.content
+
+    # Step 5: Perform Bell Test with the public data
+    chsh_bases_a = [bases_a[i] for i in test_indices]
+    chsh_bases_b = [bases_b[i] for i in test_indices]
+    chsh_meas_a = [public_meas_a[i] for i in test_indices]
+    chsh_meas_b = [public_meas_b[i] for i in test_indices]
+    s_value = e91_perform_chsh_test(chsh_bases_a, chsh_bases_b, chsh_meas_a, chsh_meas_b)
     print(f"[{host.host_id}] Calculated CHSH S-value: {s_value:.4f}")
 
     if abs(s_value) <= 2.0:
         print(f"CRITICAL: [{host.host_id}] Bell test FAILED. Aborting protocol.")
+        host.send_classical(receiver_id, "ABORT", await_ack=True)
         return
 
     print(f"[{host.host_id}] Bell test PASSED. Entanglement confirmed.")
-    one_time_pad_key = e91_extract_key(bases_a, bases_b, meas_a)
+
+    # Step 6: Extract secret key from the remaining PRIVATE subset
+    key_indices = sorted(list(set(all_indices) - set(test_indices)))
+    key_gen_bases_a = [bases_a[i] for i in key_indices]
+    key_gen_bases_b = [bases_b[i] for i in key_indices]
+    key_gen_meas_a = [meas_a[i] for i in key_indices]
+    one_time_pad_key = e91_extract_key(key_gen_bases_a, key_gen_bases_b, key_gen_meas_a)
 
     if len(one_time_pad_key) < required_key_len:
         print(f"CRITICAL: [{host.host_id}] Generated key too short. Aborting.")
+        host.send_classical(receiver_id, "ABORT", await_ack=True)
         return
 
-    # Encrypt and send message
+    # Step 7: Encrypt and send message
     ciphertext_binary = apply_one_time_pad(message_binary, one_time_pad_key)
     print(f"[{host.host_id}] Encrypted message with OTP, sending to [{receiver_id}].")
     host.send_classical(receiver_id, ciphertext_binary, await_ack=True)
@@ -425,38 +449,62 @@ def e91_receiver_protocol(host: Host, sender_id: str):
     Full E91 QKD receiver (Bob) protocol.
     """
     msg = host.get_next_classical(sender_id, wait=NETWORK_TIMEOUT)
-    if not msg:
-        print(f"ERROR: [{host.host_id}] Did not receive pair count from [{sender_id}].")
+    if not msg or msg.content == "ABORT":
+        print(f"ERROR: [{host.host_id}] Did not receive pair count or sender aborted.")
         return None
     num_pairs = int(msg.content)
     print(f"[{host.host_id}] Awaiting {num_pairs} EPR pairs from [{sender_id}].")
 
-    # Measure EPR pairs
-    bases_b = [random.choice([np.pi / 4, np.pi / 2]) for _ in range(num_pairs)]
-    meas_b = []
-    for _ in range(num_pairs):
+    # Step 1: Measure incoming EPR pairs
+    bases_b_full = [random.choice([np.pi / 4, np.pi / 2]) for _ in range(num_pairs)]
+    bases_b, meas_b = [], []
+
+    for i in range(num_pairs):
         q = host.get_epr(sender_id, wait=NETWORK_TIMEOUT)
         if q:
-            basis = bases_b[len(meas_b)]
+            basis = bases_b_full[i]
+            bases_b.append(basis)
             q.ry(basis)
             meas_b.append(q.measure())
 
-    # Exchange bases with Alice
+    # Step 2: Exchange bases with Alice
     bases_a, _ = e91_exchange_bases(host, sender_id, bases_b, is_initiator=False)
     if bases_a is None:
         print(f"CRITICAL: [{host.host_id}] Failed to exchange bases with [{sender_id}].")
         return None
 
-    # Exchange measurement outcomes with Alice
-    meas_a_obj = host.get_next_classical(sender_id, wait=NETWORK_TIMEOUT)
-    if not meas_a_obj:
-        print(f"CRITICAL: [{host.host_id}] Timed out waiting for partner's measurements.")
-        return None
-    meas_a = meas_a_obj.content
-    host.send_classical(sender_id, meas_b, await_ack=True)
+    # Truncate lists to the minimum common length
+    min_len = min(len(bases_a), len(bases_b), len(meas_b))
+    bases_a, bases_b, meas_b = bases_a[:min_len], bases_b[:min_len], meas_b[:min_len]
+    num_pairs = min_len
 
-    # Perform Bell Test with both sets of measurements
-    s_value = e91_perform_chsh_test(bases_a, bases_b, meas_a, meas_b)
+    if num_pairs == 0:
+        print(f"CRITICAL: [{host.host_id}] No viable qubit pairs remaining. Aborting.")
+        return None
+
+    # Step 3: Receive test indices and public measurements from Alice
+    test_indices_obj = host.get_next_classical(sender_id, wait=NETWORK_TIMEOUT)
+    if not test_indices_obj:
+        print(f"CRITICAL: [{host.host_id}] Timed out waiting for test indices from partner.")
+        return None
+    test_indices = test_indices_obj.content
+
+    public_meas_a_obj = host.get_next_classical(sender_id, wait=NETWORK_TIMEOUT)
+    if not public_meas_a_obj:
+        print(f"CRITICAL: [{host.host_id}] Timed out waiting for partner's public measurements.")
+        return None
+    public_meas_a = public_meas_a_obj.content
+
+    # Step 4: Send measurement outcomes FOR THE TEST SUBSET ONLY
+    public_meas_b = {i: meas_b[i] for i in test_indices}
+    host.send_classical(sender_id, public_meas_b, await_ack=True)
+
+    # Step 5: Perform Bell Test with the public data
+    chsh_bases_a = [bases_a[i] for i in test_indices]
+    chsh_bases_b = [bases_b[i] for i in test_indices]
+    chsh_meas_a = [public_meas_a[i] for i in test_indices]
+    chsh_meas_b = [public_meas_b[i] for i in test_indices]
+    s_value = e91_perform_chsh_test(chsh_bases_a, chsh_bases_b, chsh_meas_a, chsh_meas_b)
     print(f"[{host.host_id}] Calculated CHSH S-value: {s_value:.4f}")
 
     if abs(s_value) <= 2.0:
@@ -464,15 +512,21 @@ def e91_receiver_protocol(host: Host, sender_id: str):
         return None
 
     print(f"[{host.host_id}] Bell test PASSED. Entanglement confirmed.")
-    one_time_pad_key = e91_extract_key(bases_b, bases_a, meas_b)
 
-    # Receive and decrypt message
-    encrypted_message = host.get_next_classical(sender_id, wait=NETWORK_TIMEOUT)
-    if not encrypted_message:
-        print(f"[{host.host_id}] Timed out waiting for final message.")
+    # Step 6: Extract secret key from the remaining PRIVATE subset
+    key_indices = sorted(list(set(range(num_pairs)) - set(test_indices)))
+    key_gen_bases_a = [bases_a[i] for i in key_indices]
+    key_gen_bases_b = [bases_b[i] for i in key_indices]
+    key_gen_meas_b = [meas_b[i] for i in key_indices]
+    one_time_pad_key = e91_extract_key(key_gen_bases_b, key_gen_bases_a, key_gen_meas_b)
+
+    # Step 7: Receive and decrypt message
+    encrypted_message_obj = host.get_next_classical(sender_id, wait=NETWORK_TIMEOUT)
+    if not encrypted_message_obj or encrypted_message_obj.content == "ABORT":
+        print(f"[{host.host_id}] Timed out waiting for final message or sender aborted.")
         return None
 
-    decrypted_binary = apply_one_time_pad(encrypted_message.content, one_time_pad_key)
+    decrypted_binary = apply_one_time_pad(encrypted_message_obj.content, one_time_pad_key)
     decrypted_message = binary_to_text(decrypted_binary)
 
     print(f"[{host.host_id}] Successfully decrypted quantum message: '{decrypted_message}'")
@@ -569,7 +623,7 @@ def main():
     Main function to define and run the simulation scenarios.
     """
     pqc_kem_instance = MLKEM_1024()
-    message = "Hello World!"
+    message = "H!"
 
     qkd_protocols = {
         "B92": ("B92", b92_sender_protocol, b92_receiver_protocol),
