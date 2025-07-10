@@ -1,72 +1,84 @@
 import random
 from qunetsim.components import Host, Network
 from qunetsim.objects import Qubit, Logger
+from math import ceil
 
 Logger.DISABLED = True
-KEY_LENGTH = 50
+BB84_KEY_LENGTH = 50
+BB84_KEY_CHECK_RATIO = 0.5
 NETWORK_TIMEOUT = 10
+BB84_MAX_ERROR_RATE = 15
+
 
 def alice_bb84(alice: Host, bob_id: str):
-    alice_bits = [random.randint(0, 1) for _ in range(KEY_LENGTH)]
-    print(f"\nAlice's random bits: {alice_bits}")
+    # Step 1: Generate random bits/bases
+    alice_bits = [random.randint(0, 1) for _ in range(BB84_KEY_LENGTH)]
+    alice_bases = [random.choice(['Z', 'H']) for _ in range(BB84_KEY_LENGTH)]
 
-    alice_bases = [random.choice(['Z', 'H']) for _ in range(KEY_LENGTH)]
-    print(f"Alice's random bases: {alice_bases}")
-
-    for i in range(KEY_LENGTH):
+    # Step 2: Prepare and send qubits
+    for i in range(BB84_KEY_LENGTH):
         q = Qubit(alice)
-        if alice_bits[i] == 1:
-            q.X()
-        if alice_bases[i] == 'H':
-            q.H()
+        if alice_bits[i] == 1: q.X()
+        if alice_bases[i] == 'H': q.H()
         alice.send_qubit(bob_id, q)
-    print("\nAlice sent all qubits.")
 
+    # Step 3: Compare bases
     alice.send_classical(bob_id, alice_bases)
-    print("Alice sent her bases.")
+    bob_bases = alice.get_next_classical(bob_id, wait=-1).content
 
-    bob_bases_obj = alice.get_next_classical(bob_id, wait=-1)
-    if not bob_bases_obj:
-        return None
-    bob_bases = bob_bases_obj.content
-    print(f"\nAlice received Bob's bases: {bob_bases}")
+    # Step 4: Calculate sifted key
+    sifted_key = [alice_bits[i] for i in range(BB84_KEY_LENGTH) if alice_bases[i] == bob_bases[i]]
 
-    sifted_key_alice = []
-    for i in range(KEY_LENGTH):
-        if alice_bases[i] == bob_bases[i]:
-            sifted_key_alice.append(alice_bits[i])
-    print(f"Alice's sifted key: {sifted_key_alice}")
+    # Step 5: Error checking
+    num_samples = ceil(len(sifted_key) * BB84_KEY_CHECK_RATIO)
+    sample_indices = sorted(random.sample(range(len(sifted_key)), num_samples))
+    sample_values = [sifted_key[i] for i in sample_indices]
 
+    alice.send_classical(bob_id, sample_indices)
+    alice.send_classical(bob_id, sample_values)
+
+    error_rate = alice.get_next_classical(bob_id, wait=-1).content
+    if error_rate > BB84_MAX_ERROR_RATE:
+        return -1
+
+    # Step 6: Generate final key
+    final_key = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
+    return final_key
 
 def bob_bb84(bob: Host, alice_id: str):
-    bob_bases = [random.choice(['Z', 'H']) for _ in range(KEY_LENGTH)]
-    print(f"\nBob's random bases: {bob_bases}")
+    # Step 1: Generate random bases
+    bob_bases = [random.choice(['Z', 'H']) for _ in range(BB84_KEY_LENGTH)]
 
+    # Step 2: Measure incoming qubits
     bob_measured_bits = []
-    for i in range(KEY_LENGTH):
+    for i in range(BB84_KEY_LENGTH):
         q = bob.get_qubit(alice_id, wait=-1)
         if q:
             if bob_bases[i] == 'H':
                 q.H()
             bob_measured_bits.append(q.measure())
-    print("\nBob received and measured all qubits.")
-    print(f"Bob's measured bits: {bob_measured_bits}")
 
-    alice_bases_obj = bob.get_next_classical(alice_id, wait=-1)
-    if not alice_bases_obj:
-        return None
-    alice_bases = alice_bases_obj.content
-    print(f"Bob received Alice's bases: {alice_bases}")
-
+    # Step 3: Compare bases
+    alice_bases = bob.get_next_classical(alice_id, wait=-1).content
     bob.send_classical(alice_id, bob_bases)
-    print("Bob sent his bases.")
 
-    sifted_key_bob = []
-    for i in range(KEY_LENGTH):
-        if alice_bases[i] == bob_bases[i]:
-            sifted_key_bob.append(bob_measured_bits[i])
-    print(f"Bob's sifted key: {sifted_key_bob}")
+    # Step 4: Calculate sifted key
+    sifted_key = [bob_measured_bits[i] for i in range(BB84_KEY_LENGTH) if alice_bases[i] == bob_bases[i]]
 
+    # Step 5: Error checking
+    sample_indices = bob.get_next_classical(alice_id, wait=-1).content
+    sample_values = bob.get_next_classical(alice_id, wait=-1).content
+
+    mismatches = sum(1 for i, index in enumerate(sample_indices) if sifted_key[index] != sample_values[i])
+    error_rate = (mismatches / len(sample_indices)) * 100
+    bob.send_classical(alice_id, error_rate)
+
+    if error_rate > BB84_MAX_ERROR_RATE:
+        return -1
+
+    # Step 6: Generate final key
+    final_key = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
+    return final_key
 
 def main():
     network = Network.get_instance()
