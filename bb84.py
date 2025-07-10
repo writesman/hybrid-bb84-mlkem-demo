@@ -69,7 +69,6 @@ class BB84:
         # Step 5: Generate the final secure key.
         final_key_bits = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
         final_key = BB84._privacy_amplification(final_key_bits)
-        print(f"Alice: Final key: {final_key}")
         return final_key
 
     @staticmethod
@@ -113,7 +112,6 @@ class BB84:
         # Step 5: Generate the final secure key.
         final_key_bits = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
         final_key = BB84._privacy_amplification(final_key_bits)
-        print(f"Bob: Final key: {final_key_bits}")
         return final_key
 
     @staticmethod
