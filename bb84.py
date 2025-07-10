@@ -11,7 +11,7 @@ class BB84:
     """
     Encapsulates the BB84 protocol logic, including an optional eavesdropper.
     """
-    KEY_LENGTH = 20
+    KEY_LENGTH = 50
     KEY_CHECK_RATIO = 0.5
     MAX_ERROR_RATE = 15.0  # Max tolerable error rate in percent
 
@@ -62,6 +62,7 @@ class BB84:
         error_rate = alice.get_next_classical(receiver_id, wait=-1).content
 
         if error_rate > BB84.MAX_ERROR_RATE:
+            print(f"Alice: Error rate: {error_rate}")
             print(f"Alice: Error rate is too high! Aborting protocol.")
             return None
 
@@ -112,29 +113,114 @@ class BB84:
         # Step 5: Generate the final secure key.
         final_key_bits = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
         final_key = BB84._privacy_amplification(final_key_bits)
-        print(f"Bob: Final key: {final_key}")
+        print(f"Bob: Final key: {final_key_bits}")
         return final_key
+
+    @staticmethod
+    def eve_protocol(eve: Host, sender_id: str, receiver_id: str):
+        """
+        Eve's eavesdropping protocol (intercept-and-resend attack).
+        """
+        for _ in range(BB84.KEY_LENGTH):
+            # Intercept qubit from Alice.
+            q = eve.get_qubit(sender_id, wait=-1)
+            if q:
+                # Eve randomly chooses a basis to measure.
+                eve_basis = random.choice(['Z', 'X'])
+                if eve_basis == 'X':
+                    q.H()
+
+                # Measure and collapse the qubit's state.
+                measured_bit = q.measure()
+
+                # Create a new qubit in the state Eve measured.
+                new_q = Qubit(eve)
+                if measured_bit == 1:
+                    new_q.X()
+                if eve_basis == 'X':
+                    new_q.H()
+
+                # Send the new (potentially altered) qubit to Bob.
+                eve.send_qubit(receiver_id, new_q, await_ack=False)
+
+        # Forward classical messages
+        alice_bases = eve.get_next_classical(sender_id, wait=-1).content
+        eve.send_classical(receiver_id, alice_bases)
+
+        bob_bases = eve.get_next_classical(receiver_id, wait=-1).content
+        eve.send_classical(sender_id, bob_bases)
+
+        sample_indices, sample_values = eve.get_next_classical(sender_id, wait=-1).content
+        eve.send_classical(receiver_id, (sample_indices, sample_values))
+
+        error_rate = eve.get_next_classical(receiver_id, wait=-1).content
+        eve.send_classical(sender_id, error_rate)
 
 
 def main():
+    """
+    Main function to run the BB84 simulation.
+    The user can choose whether to include an eavesdropper.
+    """
+    # --- Simulation Setup ---
+    eavesdropper_present = True
+
     network = Network.get_instance()
-    nodes = ['Alice', 'Bob']
-    network.start(nodes)
 
-    host_alice = Host('Alice')
-    host_bob = Host('Bob')
+    if eavesdropper_present:
+        print("--- Running BB84 Protocol WITH Eavesdropper ---")
+        nodes = ['Alice', 'Bob', 'Eve']
+        network.start(nodes)
 
-    host_alice.add_connection('Bob')
-    host_bob.add_connection('Alice')
+        host_alice = Host('Alice')
+        host_bob = Host('Bob')
+        host_eve = Host('Eve')
 
-    host_alice.start()
-    host_bob.start()
-    network.add_host(host_alice)
-    network.add_host(host_bob)
+        host_alice.add_connection('Eve')
+        host_eve.add_connection('Alice')
+        host_eve.add_connection('Bob')
+        host_bob.add_connection('Eve')
 
-    t_alice = host_alice.run_protocol(BB84.alice_protocol, (host_bob.host_id,))
-    t_bob = host_bob.run_protocol(BB84.bob_protocol, (host_alice.host_id,))
+        host_alice.start()
+        host_bob.start()
+        host_eve.start()
+        network.add_host(host_alice)
+        network.add_host(host_bob)
+        network.add_host(host_eve)
 
-    t_alice.join()
-    t_bob.join()
-    network.stop(True)
+        t_alice = host_alice.run_protocol(BB84.alice_protocol, (host_eve.host_id,))
+        t_eve = host_eve.run_protocol(BB84.eve_protocol, (host_alice.host_id, host_bob.host_id))
+        t_bob = host_bob.run_protocol(BB84.bob_protocol, (host_eve.host_id,))
+
+        t_alice.join()
+        t_eve.join()
+        t_bob.join()
+
+        network.stop(True)
+    else:
+        print("--- Running BB84 Protocol WITHOUT Eavesdropper ---")
+        nodes = ['Alice', 'Bob']
+        network.start(nodes)
+
+        host_alice = Host('Alice')
+        host_bob = Host('Bob')
+
+        host_alice.add_connection('Bob')
+        host_bob.add_connection('Alice')
+
+        host_alice.start()
+        host_bob.start()
+        network.add_host(host_alice)
+        network.add_host(host_bob)
+
+        t_alice = host_alice.run_protocol(BB84.alice_protocol, (host_bob.host_id,))
+        t_bob = host_bob.run_protocol(BB84.bob_protocol, (host_alice.host_id,))
+
+        t_alice.join()
+        t_bob.join()
+
+        network.stop(True)
+
+
+if __name__ == '__main__':
+    main()
