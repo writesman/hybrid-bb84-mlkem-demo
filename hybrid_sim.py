@@ -51,13 +51,13 @@ def ml_kem_encapsulate(host: Host, receiver_id: str, kem_instance):
 
 
 def classical_protocol(host: Host, middleware_id: str, kem_instance):
-    shared_secret = ml_kem_decapsulate(host, middleware_id, kem_instance)
-    print(f"[{host.host_id}] Shared secret: {shared_secret}")
+    pqc_key = ml_kem_decapsulate(host, middleware_id, kem_instance)
+    print(f"[{host.host_id}] PQC Key: {pqc_key}")
 
 
 def middleware_protocol(host: Host, classical_id: str, kem_instance):
-    shared_secret = ml_kem_encapsulate(host, classical_id, kem_instance)
-    print(f"[{host.host_id}] Shared secret: {shared_secret}")
+    pqc_key = ml_kem_encapsulate(host, classical_id, kem_instance)
+    print(f"[{host.host_id}] PQC Key: {pqc_key}")
 
 
 def main():
