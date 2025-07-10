@@ -69,7 +69,7 @@ class BB84:
         # Step 5: Generate the final secure key.
         final_key_bits = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
         final_key = BB84._privacy_amplification(final_key_bits)
-        return final_key
+        return bytes.fromhex(final_key)
 
     @staticmethod
     def bob_protocol(bob: Host, sender_id: str):
@@ -112,7 +112,7 @@ class BB84:
         # Step 5: Generate the final secure key.
         final_key_bits = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
         final_key = BB84._privacy_amplification(final_key_bits)
-        return final_key
+        return bytes.fromhex(final_key)
 
     @staticmethod
     def eve_protocol(eve: Host, sender_id: str, receiver_id: str):
