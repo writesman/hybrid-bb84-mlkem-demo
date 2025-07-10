@@ -17,8 +17,10 @@ def alice_bb84(alice: Host, bob_id: str):
     # Step 2: Prepare and send qubits
     for i in range(BB84_KEY_LENGTH):
         q = Qubit(alice)
-        if alice_bits[i] == 1: q.X()
-        if alice_bases[i] == 'H': q.H()
+        if alice_bits[i] == 1:
+            q.X()
+        if alice_bases[i] == 'H':
+            q.H()
         alice.send_qubit(bob_id, q)
 
     # Step 3: Compare bases
@@ -69,7 +71,11 @@ def bob_bb84(bob: Host, alice_id: str):
     sample_indices = bob.get_next_classical(alice_id, wait=-1).content
     sample_values = bob.get_next_classical(alice_id, wait=-1).content
 
-    mismatches = sum(1 for i, index in enumerate(sample_indices) if sifted_key[index] != sample_values[i])
+    mismatches = 0
+    for i, index in enumerate(sample_indices):
+        if sifted_key[index] != sample_values[i]:
+            mismatches += 1
+
     error_rate = (mismatches / len(sample_indices)) * 100
     bob.send_classical(alice_id, error_rate)
 
