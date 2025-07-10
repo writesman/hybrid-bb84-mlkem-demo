@@ -1,5 +1,6 @@
 import random
 import hashlib
+import base64
 from qunetsim.components import Host, Network
 from qunetsim.objects import Qubit, Logger
 from math import ceil
@@ -16,15 +17,15 @@ class BB84:
     MAX_ERROR_RATE = 15.0  # Max tolerable error rate in percent
 
     @staticmethod
-    def _privacy_amplification(key: list) -> str:
+    def _privacy_amplification(sifted_bits: list) -> bytes:
         """
         Reduces any partial information an eavesdropper might have by hashing the key.
         """
-        key_string = "".join(map(str, key))
-        # Use SHA-256 to create a new, shorter, and more secure key.
+        bit_string = "".join(map(str, sifted_bits))
         hasher = hashlib.sha256()
-        hasher.update(key_string.encode('utf-8'))
-        return hasher.hexdigest()
+        hasher.update(bit_string.encode('utf-8'))
+        key_digest = hasher.digest()
+        return base64.urlsafe_b64encode(key_digest)
 
     @staticmethod
     def alice_protocol(alice: Host, receiver_id: str):
@@ -67,9 +68,8 @@ class BB84:
             return None
 
         # Step 5: Generate the final secure key.
-        final_key_bits = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
-        final_key = BB84._privacy_amplification(final_key_bits)
-        return bytes.fromhex(final_key)
+        final_key = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
+        return BB84._privacy_amplification(final_key)
 
     @staticmethod
     def bob_protocol(bob: Host, sender_id: str):
@@ -110,9 +110,8 @@ class BB84:
             return None
 
         # Step 5: Generate the final secure key.
-        final_key_bits = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
-        final_key = BB84._privacy_amplification(final_key_bits)
-        return bytes.fromhex(final_key)
+        final_key = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
+        return BB84._privacy_amplification(final_key)
 
     @staticmethod
     def eve_protocol(eve: Host, sender_id: str, receiver_id: str):
