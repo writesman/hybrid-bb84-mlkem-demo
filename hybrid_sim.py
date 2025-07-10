@@ -1,5 +1,6 @@
 from quantcrypt.kem import MLKEM_1024
 from qunetsim.components import Host, Network
+from bb84 import BB84
 
 NETWORK_TIMEOUT = 20
 
@@ -55,9 +56,28 @@ def classical_protocol(host: Host, middleware_id: str, kem_instance):
     print(f"[{host.host_id}] PQC Key: {pqc_key}")
 
 
-def middleware_protocol(host: Host, classical_id: str, kem_instance):
+def middleware_protocol(host: Host, classical_id: str, quantum_id: str, kem_instance):
     pqc_key = ml_kem_encapsulate(host, classical_id, kem_instance)
     print(f"[{host.host_id}] PQC Key: {pqc_key}")
+
+    qkd_key = BB84.alice_protocol(host, quantum_id)
+    print(f"[{host.host_id}] QKD Key: {qkd_key}")
+
+    # Find the length of the shorter key
+    min_len = min(len(pqc_key), len(qkd_key))
+
+    # Truncate both keys to the minimum length
+    pqc_key_truncated = pqc_key[:min_len]
+    qkd_key_truncated = qkd_key[:min_len]
+
+    # XOR to create hybrid key
+    hybrid_key = bytes([b1 ^ b2 for b1, b2 in zip(pqc_key_truncated, qkd_key_truncated)])
+    print(f"[{host.host_id}] Hybrid Key: {hybrid_key}")
+
+
+def quantum_protocol(host: Host, middleware_id: str):
+    qkd_key = BB84.bob_protocol(host, middleware_id)
+    print(f"[{host.host_id}] QKD Key: {qkd_key}")
 
 
 def main():
@@ -68,10 +88,12 @@ def main():
     middleware_node = hosts['middleware']
     quantum_node = hosts['quantum']
 
-    thread1 = classical_node.run_protocol(classical_protocol, (middleware_node.host_id, pqc_kem_instance))
-    thread2 = middleware_node.run_protocol(middleware_protocol, (classical_node.host_id, pqc_kem_instance))
+    thread_c = classical_node.run_protocol(classical_protocol, (middleware_node.host_id, pqc_kem_instance))
+    thread_m = middleware_node.run_protocol(middleware_protocol,
+                                            (classical_node.host_id, quantum_node.host_id, pqc_kem_instance))
+    thread_q = quantum_node.run_protocol(quantum_protocol, (middleware_node.host_id,))
 
-    for thread in [thread1, thread2]:
+    for thread in [thread_c, thread_m, thread_q]:
         thread.join()
 
     network.stop()
