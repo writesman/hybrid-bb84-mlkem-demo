@@ -6,7 +6,6 @@ from math import ceil
 Logger.DISABLED = True
 BB84_KEY_LENGTH = 50
 BB84_KEY_CHECK_RATIO = 0.5
-NETWORK_TIMEOUT = 10
 BB84_MAX_ERROR_RATE = 15
 
 
@@ -45,6 +44,7 @@ def alice_bb84(alice: Host, bob_id: str):
     final_key = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
     return final_key
 
+
 def bob_bb84(bob: Host, alice_id: str):
     # Step 1: Generate random bases
     bob_bases = [random.choice(['Z', 'H']) for _ in range(BB84_KEY_LENGTH)]
@@ -79,6 +79,7 @@ def bob_bb84(bob: Host, alice_id: str):
     # Step 6: Generate final key
     final_key = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
     return final_key
+
 
 def main():
     network = Network.get_instance()
