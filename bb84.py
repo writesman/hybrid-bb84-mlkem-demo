@@ -66,26 +66,28 @@ class BB84:
             response = alice.get_next_classical(bob_id, wait=-1).content
 
             if response == "MATCH":
+                print("boom they matched")
                 break
         return key
 
     @staticmethod
     def _alice_cascade_binary_search(alice: Host, bob_id: str, key: list[int], block: list[int]):
-        if len(block) == 1:
-            return
+        """Iterative binary search to find the error in a block."""
+        while len(block) > 1:
+            mid = len(block) // 2
+            left = block[:mid]
 
-        mid = len(block) // 2
-        left = block[:mid]
-        right = block[mid:]
+            # Send parity of the left half to Bob
+            left_parity = sum(key[i] for i in left) % 2
+            alice.send_classical(bob_id, left_parity, await_ack=True)
 
-        left_parity = sum(key[i] for i in left) % 2
-        alice.send_classical(bob_id, (left, left_parity), await_ack=True)
-        mismatch = alice.get_next_classical(bob_id, wait=-1).content
+            # Bob will tell us if the mismatch is in the left half
+            mismatch_in_left = alice.get_next_classical(bob_id, wait=-1).content
 
-        if mismatch:
-            BB84._alice_cascade_binary_search(alice, bob_id, key, left)
-        else:
-            BB84._alice_cascade_binary_search(alice, bob_id, key, right)
+            if mismatch_in_left:
+                block = left  # Narrow search to the left half
+            else:
+                block = block[mid:]  # Narrow search to the right half
 
     @staticmethod
     def _bob_cascade_protocol(bob: Host, alice_id: str, corrected_key_candidate: list[int], error_rate: float,
@@ -124,23 +126,30 @@ class BB84:
 
     @staticmethod
     def _bob_cascade_binary_search(bob: Host, alice_id: str, key: list[int], block: list[int]):
-        if len(block) == 1:
-            key[block[0]] ^= 1
-            return
+        """
+        Iterative binary search to find and correct the error in a block.
+        """
+        while len(block) > 1:
+            mid = len(block) // 2
+            left = block[:mid]
 
-        mid = len(block) // 2
-        left = block[:mid]
-        right = block[mid:]
+            # Receive the parity of the left half from Alice
+            alice_left_parity = bob.get_next_classical(alice_id, wait=-1).content
 
-        left_block, alice_parity = bob.get_next_classical(alice_id, wait=-1).content
-        bob_parity = sum(key[i] for i in left_block) % 2
-        mismatch = (bob_parity != alice_parity)
-        bob.send_classical(alice_id, mismatch, await_ack=True)
+            # Calculate our own parity for the left half
+            bob_left_parity = sum(key[i] for i in left) % 2
 
-        if mismatch:
-            BB84._bob_cascade_binary_search(bob, alice_id, key, left)
-        else:
-            BB84._bob_cascade_binary_search(bob, alice_id, key, right)
+            mismatch_in_left = (alice_left_parity != bob_left_parity)
+            bob.send_classical(alice_id, mismatch_in_left, await_ack=True)
+
+            if mismatch_in_left:
+                block = left  # The error is in the left half
+            else:
+                block = block[mid:]  # The error must be in the right half
+
+        # The block now contains the single index with the error. Flip the bit.
+        error_index = block[0]
+        key[error_index] ^= 1
 
     @staticmethod
     def alice_protocol(alice: Host, receiver_id: str):
