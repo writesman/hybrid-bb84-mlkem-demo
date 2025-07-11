@@ -14,7 +14,7 @@ class BB84:
     """
     KEY_LENGTH = 256
     KEY_CHECK_RATIO = 0.5
-    MAX_ERROR_RATE = 0  # Max tolerable error rate in percent
+    MAX_ERROR_RATE = 15  # Max tolerable error rate in percent
 
     @staticmethod
     def _privacy_amplification(sifted_bits: list) -> bytes:
@@ -28,6 +28,119 @@ class BB84:
         hasher.update(bit_string.encode('utf-8'))
         key_digest = hasher.digest()
         return base64.urlsafe_b64encode(key_digest)
+
+    @staticmethod
+    def compute_initial_block_size(error_rate_percent: float) -> int:
+        """Calculate initial block size based on error rate (percentage)."""
+        qber = error_rate_percent / 100
+        if qber <= 0:
+            return 16  # fallback default
+        return max(4, ceil(0.73 / qber))
+
+    @staticmethod
+    def _alice_cascade_protocol(alice: Host, bob_id: str, corrected_key_candidate: list[int], error_rate: float,
+                                seed: int = 42, max_passes: int = 10) -> list[int]:
+        key = corrected_key_candidate[:]  # Copy to avoid mutating input
+        n = len(key)
+        initial_block_size = BB84.compute_initial_block_size(error_rate)
+
+        for pass_num in range(max_passes):
+            block_size = initial_block_size * (2 ** pass_num)
+            indices = list(range(n))
+            random.seed(seed + pass_num)
+            random.shuffle(indices)
+
+            blocks = [indices[i:i + block_size] for i in range(0, n, block_size)]
+
+            for block_num, block in enumerate(blocks, start=1):
+                alice_parity = sum(key[i] for i in block) % 2
+                alice.send_classical(bob_id, (block, alice_parity), await_ack=True)
+                mismatch = alice.get_next_classical(bob_id, wait=-1).content
+
+                if mismatch:
+                    BB84._alice_cascade_binary_search(alice, bob_id, key, block)
+
+            # After each pass, send hash of key to Bob and receive confirmation
+            key_hash = hashlib.sha256("".join(map(str, key)).encode('utf-8')).digest()
+            alice.send_classical(bob_id, ("KEY_HASH", key_hash), await_ack=True)
+            response = alice.get_next_classical(bob_id, wait=-1).content
+
+            if response == "MATCH":
+                break
+        return key
+
+    @staticmethod
+    def _alice_cascade_binary_search(alice: Host, bob_id: str, key: list[int], block: list[int]):
+        if len(block) == 1:
+            return
+
+        mid = len(block) // 2
+        left = block[:mid]
+        right = block[mid:]
+
+        left_parity = sum(key[i] for i in left) % 2
+        alice.send_classical(bob_id, (left, left_parity), await_ack=True)
+        mismatch = alice.get_next_classical(bob_id, wait=-1).content
+
+        if mismatch:
+            BB84._alice_cascade_binary_search(alice, bob_id, key, left)
+        else:
+            BB84._alice_cascade_binary_search(alice, bob_id, key, right)
+
+    @staticmethod
+    def _bob_cascade_protocol(bob: Host, alice_id: str, corrected_key_candidate: list[int], error_rate: float,
+                              seed: int = 42, max_passes: int = 10) -> list[int]:
+        key = corrected_key_candidate[:]  # Copy to avoid mutating input
+        n = len(key)
+        initial_block_size = BB84.compute_initial_block_size(error_rate)
+
+        for pass_num in range(max_passes):
+            block_size = initial_block_size * (2 ** pass_num)
+            indices = list(range(n))
+            random.seed(seed + pass_num)
+            random.shuffle(indices)
+
+            num_blocks = ceil(n / block_size)
+            for block_num in range(num_blocks):
+                block, alice_parity = bob.get_next_classical(alice_id, wait=-1).content
+
+                bob_parity = sum(key[i] for i in block) % 2
+                mismatch = (bob_parity != alice_parity)
+                bob.send_classical(alice_id, mismatch, await_ack=True)
+
+                if mismatch:
+                    BB84._bob_cascade_binary_search(bob, alice_id, key, block)
+
+            # After each pass, receive Alice's key hash, compare and respond
+            msg_type, key_hash = bob.get_next_classical(alice_id, wait=-1).content
+            if msg_type == "KEY_HASH":
+                bob_key_hash = hashlib.sha256("".join(map(str, key)).encode('utf-8')).digest()
+                if bob_key_hash == key_hash:
+                    bob.send_classical(alice_id, "MATCH", await_ack=True)
+                    break
+                else:
+                    bob.send_classical(alice_id, "MISMATCH", await_ack=True)
+        return key
+
+    @staticmethod
+    def _bob_cascade_binary_search(bob: Host, alice_id: str, key: list[int], block: list[int]):
+        if len(block) == 1:
+            key[block[0]] ^= 1
+            return
+
+        mid = len(block) // 2
+        left = block[:mid]
+        right = block[mid:]
+
+        left_block, alice_parity = bob.get_next_classical(alice_id, wait=-1).content
+        bob_parity = sum(key[i] for i in left_block) % 2
+        mismatch = (bob_parity != alice_parity)
+        bob.send_classical(alice_id, mismatch, await_ack=True)
+
+        if mismatch:
+            BB84._bob_cascade_binary_search(bob, alice_id, key, left)
+        else:
+            BB84._bob_cascade_binary_search(bob, alice_id, key, right)
 
     @staticmethod
     def alice_protocol(alice: Host, receiver_id: str):
@@ -74,9 +187,13 @@ class BB84:
             print(f"Alice: Error rate measured ({error_rate:.2f}%) is too high! Aborting protocol.")
             return None
 
-        # Step 5: Generate the final secure key.
-        final_key = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
-        return BB84._privacy_amplification(final_key)
+        # Step 5: Remove sample bits and perform Cascade error reconciliation.
+        noisy_key = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
+
+        reconciled_key = BB84._alice_cascade_protocol(alice, receiver_id, noisy_key, error_rate)
+
+        # Step 6: Perform privacy amplification
+        return BB84._privacy_amplification(reconciled_key)
 
     @staticmethod
     def bob_protocol(bob: Host, sender_id: str, qber: float = 0.0):
@@ -124,9 +241,13 @@ class BB84:
             print(f"Bob: Error rate measured ({error_rate:.2f}%) is too high! Aborting protocol.")
             return None
 
-        # Step 5: Generate the final secure key.
-        final_key = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
-        return BB84._privacy_amplification(final_key)
+        # Step 5: Remove sample bits and perform Cascade error reconciliation.
+        noisy_key = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
+
+        reconciled_key = BB84._bob_cascade_protocol(bob, sender_id, noisy_key, error_rate)
+
+        # Step 6: Perform privacy amplification
+        return BB84._privacy_amplification(reconciled_key)
 
     @staticmethod
     def eve_protocol(eve: Host, sender_id: str, receiver_id: str):
