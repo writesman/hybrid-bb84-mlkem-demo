@@ -433,9 +433,16 @@ class BB84:
 
         Returns:
             A URL-safe, base64-encoded secure key as a bytes object, or None if the input is empty.
+
+        Raises:
+            ValueError: If the reconciled_key contains non-binary values.
         """
         if not reconciled_key:
             return None
+
+        if not all(bit in (0, 1) for bit in reconciled_key):
+            raise ValueError("Invalid key format: reconciled_key must contain only 0s and 1s.")
+
         reconciled_key_str = "".join(map(str, reconciled_key))
         hasher = hashlib.sha256()
         hasher.update(reconciled_key_str.encode('utf-8'))
