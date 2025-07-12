@@ -48,10 +48,9 @@ class BB84:
         # Step 3: Compare bases with Bob to create the sifted key
         alice.send_classical(receiver_id, ("BASES", alice_bases), await_ack=True)
 
-        content = BB84._receive_classical(alice, receiver_id, "BASES")
-        if content is None:
+        bob_bases = BB84._receive_classical(alice, receiver_id, "BASES")
+        if bob_bases is None:
             return None
-        bob_bases = content[1]
 
         sifted_key_indices = [i for i in range(BB84.KEY_LENGTH) if alice_bases[i] == bob_bases[i]]
         sifted_key = [alice_bits[i] for i in sifted_key_indices]
@@ -70,10 +69,9 @@ class BB84:
         sample_values = [sifted_key[i] for i in sample_indices]
         alice.send_classical(receiver_id, ("SAMPLE_INFO", sample_indices, sample_values))
 
-        content = BB84._receive_classical(alice, receiver_id, "ERROR_RATE")
-        if content is None:
+        error_rate = BB84._receive_classical(alice, receiver_id, "ERROR_RATE")
+        if error_rate is None:
             return None
-        error_rate = content[1]
 
         if error_rate > BB84.MAX_ERROR_RATE:
             print(f"Alice: Error rate measured ({error_rate * 100:.2f}%) is too high! Aborting protocol.")
@@ -117,10 +115,9 @@ class BB84:
             bob_measured_bits.append(qubit.measure())
 
         # Step 3: Compare bases with Alice to create the sifted key
-        content = BB84._receive_classical(bob, sender_id, "BASES")
-        if content is None:
+        alice_bases = BB84._receive_classical(bob, sender_id, "BASES")
+        if alice_bases is None:
             return None
-        alice_bases = content[1]
 
         bob.send_classical(sender_id, ("BASES", bob_bases), await_ack=True)
 
@@ -131,10 +128,9 @@ class BB84:
             return None
 
         # Step 4: Calculate the error rate
-        content = BB84._receive_classical(bob, sender_id, "SAMPLE_INFO")
-        if content is None:
+        sample_indices, sample_values = BB84._receive_classical(bob, sender_id, "SAMPLE_INFO")
+        if sample_indices is None or sample_values is None:
             return None
-        sample_indices, sample_values = content[1], content[2]
 
         mismatches = sum(1 for i, index in enumerate(sample_indices) if sifted_key[index] != sample_values[i])
         error_rate = (mismatches / len(sample_indices)) if sample_indices else 0.0
@@ -221,20 +217,18 @@ class BB84:
             for block in blocks:
                 alice_parity = sum(working_key[i] for i in block) % 2
                 alice.send_classical(bob_id, ("CASCADE_BLOCK", block, alice_parity), await_ack=True)
-                content = BB84._receive_classical(alice, bob_id, "CASCADE_MISMATCH")
-                if content is None:
+                mismatch = BB84._receive_classical(alice, bob_id, "CASCADE_MISMATCH")
+                if mismatch is None:
                     return None
-                mismatch = content[1]
                 if mismatch:
                     BB84._alice_cascade_binary_search(alice, bob_id, working_key, block)
 
             key_hash = hashlib.sha256("".join(map(str, working_key)).encode('utf-8')).digest()
             alice.send_classical(bob_id, ("KEY_HASH", key_hash), await_ack=True)
 
-            content = BB84._receive_classical(alice, bob_id, "KEY_HASH_ACK")
-            if content is None:
+            is_match = BB84._receive_classical(alice, bob_id, "KEY_HASH_ACK")
+            if is_match is None:
                 return None
-            is_match = content[1]
             if is_match:
                 return working_key
 
@@ -270,11 +264,10 @@ class BB84:
             num_blocks = ceil(key_length / block_size)
 
             for _ in range(num_blocks):
-                content = BB84._receive_classical(bob, alice_id, "CASCADE_BLOCK")
-                if content is None:
+                block, alice_parity = BB84._receive_classical(bob, alice_id, "CASCADE_BLOCK")
+                if block is None or alice_parity is None:
                     return None
 
-                block, alice_parity = content[1], content[2]
                 bob_parity = sum(working_key[i] for i in block) % 2
                 mismatch = (bob_parity != alice_parity)
                 bob.send_classical(alice_id, ("CASCADE_MISMATCH", mismatch), await_ack=True)
@@ -282,11 +275,10 @@ class BB84:
                 if mismatch:
                     BB84._bob_cascade_binary_search(bob, alice_id, working_key, block)
 
-            content = BB84._receive_classical(bob, alice_id, "KEY_HASH")
-            if content is None:
+            key_hash = BB84._receive_classical(bob, alice_id, "KEY_HASH")
+            if key_hash is None:
                 return None
 
-            key_hash = content[1]
             bob_key_hash = hashlib.sha256("".join(map(str, working_key)).encode('utf-8')).digest()
 
             is_match = (bob_key_hash == key_hash)
@@ -314,10 +306,9 @@ class BB84:
             left = block[:mid]
             left_parity = sum(key[i] for i in left) % 2
             alice.send_classical(bob_id, ("CASCADE_SUB_PARITY", left_parity), await_ack=True)
-            content = BB84._receive_classical(alice, bob_id, "CASCADE_SUB_MISMATCH")
-            if content is None:
+            mismatch_in_left = BB84._receive_classical(alice, bob_id, "CASCADE_SUB_MISMATCH")
+            if mismatch_in_left is None:
                 return
-            mismatch_in_left = content[1]
             block = left if mismatch_in_left else block[mid:]
 
     @staticmethod
@@ -335,11 +326,10 @@ class BB84:
             mid = len(block) // 2
             left = block[:mid]
 
-            content = BB84._receive_classical(bob, alice_id, "CASCADE_SUB_PARITY")
-            if content is None:
+            alice_left_parity = BB84._receive_classical(bob, alice_id, "CASCADE_SUB_PARITY")
+            if alice_left_parity is None:
                 return
 
-            alice_left_parity = content[1]
             bob_left_parity = sum(key[i] for i in left) % 2
             mismatch_in_left = (alice_left_parity != bob_left_parity)
             bob.send_classical(alice_id, ("CASCADE_SUB_MISMATCH", mismatch_in_left), await_ack=True)
@@ -352,7 +342,7 @@ class BB84:
     # Helper Functions
 
     @staticmethod
-    def _receive_classical(host: Host, sender_id: str, expected_type: str | tuple[str] = None) -> tuple | None:
+    def _receive_classical(host: Host, sender_id: str, expected_type: str | tuple[str] = None):
         """
         Safely receives and unpacks a classical message.
 
@@ -360,9 +350,6 @@ class BB84:
             host (Host): The QuNetSim host calling this function.
             sender_id (str): ID of the expected message sender.
             expected_type (str, optional): Expected message type.
-
-        Returns:
-            tuple | None: The unpacked message content if successful, or None on failure.
         """
         message = host.get_next_classical(sender_id, wait=BB84.NETWORK_TIMEOUT)
 
@@ -378,15 +365,20 @@ class BB84:
             print(f"{host.host_id}: Received malformed message content (not a non-empty tuple).")
             return None
 
-        # 3. Handle message type validation if an expected type is provided
+        # 3. Validate message type
         if expected_type:
             message_type = content[0]
             if message_type != expected_type:
                 print(f"{host.host_id}: Unexpected message type '{message_type}'. Expected '{expected_type}'.")
                 return None
+            payload = content[1:]
+        else:
+            payload = content
 
-        # 4. On success, return the validated tuple content
-        return content
+        # 4. Return payload
+        if len(payload) == 1:
+            return payload[0]
+        return payload
 
     @staticmethod
     def _forward_classical_message(host: Host, sender_id: str, receiver_id: str) -> bool:
@@ -435,6 +427,7 @@ class BB84:
         """
         if error_rate <= 0:
             return 16  # fallback default
+        # 0.73 is an efficiency factor commonly used for the Cascade protocol.
         return max(4, ceil(0.73 / error_rate))
 
 
