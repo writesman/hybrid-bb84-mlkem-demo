@@ -56,13 +56,13 @@ class BB84:
         sifted_key: list[int] = [alice_bits[i] for i in sifted_key_indices]
 
         if not sifted_key:
-            print("Alice: No matching bases, protocol failed.")
+            print(f"{alice.host_id}: ERROR - No matching bases found. Aborting protocol.")
             return None
 
         # Step 4: Perform error checking by comparing a sample of the key
         num_samples: int = ceil(len(sifted_key) * BB84.KEY_CHECK_RATIO)
         if num_samples == 0:
-            print("Alice: Sifted key is too short for error checking. Aborting.")
+            print(f"{alice.host_id}: ERROR - Sifted key is too short for error checking. Aborting protocol.")
             return None
 
         sample_indices: list[int] = sorted(random.sample(range(len(sifted_key)), num_samples))
@@ -74,12 +74,16 @@ class BB84:
             return None
 
         if estimated_qber > BB84.MAX_QBER:
-            print(f"Alice: Error rate measured ({estimated_qber * 100:.2f}%) is too high! Aborting protocol.")
+            print(f"{alice.host_id}: ERROR - Estimated QBER ({estimated_qber * 100:.2f}%) exceeds maximum of "
+                  f"{BB84.MAX_QBER * 100}%. Aborting protocol.")
             return None
 
         # Step 5: Perform error reconciliation (Cascade)
         noisy_key: list[int] = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
         reconciled_key: list[int] | None = BB84._alice_cascade_protocol(alice, receiver_id, noisy_key, estimated_qber)
+
+        if reconciled_key is None:
+            return None
 
         # Step 6: Perform privacy amplification and return the final key
         return BB84._privacy_amplification(reconciled_key)
@@ -105,7 +109,7 @@ class BB84:
         for i in range(BB84.KEY_LENGTH):
             qubit = bob.get_qubit(sender_id, wait=BB84.NETWORK_TIMEOUT)
             if qubit is None:
-                print(f"Bob: Timeout waiting for qubit {i + 1}. Aborting.")
+                print(f"{bob.host_id}: ERROR - Timeout waiting for qubit {i + 1} from {sender_id}. Aborting protocol.")
                 return None
             if random.random() < simulated_qber:
                 error_gate = random.choice([qubit.X, qubit.Y, qubit.Z])
@@ -124,7 +128,7 @@ class BB84:
         sifted_key_indices: list[int] = [i for i in range(BB84.KEY_LENGTH) if alice_bases[i] == bob_bases[i]]
         sifted_key: list[int] = [bob_measured_bits[i] for i in sifted_key_indices]
         if not sifted_key:
-            print("Bob: No matching bases, protocol failed.")
+            print(f"{bob.host_id}: ERROR - No matching bases found. Aborting protocol.")
             return None
 
         # Step 4: Calculate the error rate
@@ -138,12 +142,16 @@ class BB84:
         bob.send_classical(sender_id, ("ERROR_RATE", estimated_qber))
 
         if estimated_qber > BB84.MAX_QBER:
-            print(f"Bob: Error rate measured ({estimated_qber * 100:.2f}%) is too high! Aborting protocol.")
+            print(f"{bob.host_id}: ERROR - Estimated QBER ({estimated_qber * 100:.2f}%) exceeds maximum of "
+                  f"{BB84.MAX_QBER * 100}%. Aborting protocol.")
             return None
 
         # Step 5: Perform error reconciliation (Cascade)
         noisy_key: list[int] = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
         reconciled_key: list[int] | None = BB84._bob_cascade_protocol(bob, sender_id, noisy_key, estimated_qber)
+
+        if reconciled_key is None:
+            return None
 
         # Step 6: Perform privacy amplification and return the final key
         return BB84._privacy_amplification(reconciled_key)
@@ -161,6 +169,8 @@ class BB84:
         # Quantum interception
         for _ in range(BB84.KEY_LENGTH):
             qubit: Qubit = eve.get_qubit(sender_id, wait=BB84.NETWORK_TIMEOUT)
+            if qubit is None:
+                return
             eve_basis = random.choice(['Z', 'X'])
             if eve_basis == 'X':
                 qubit.H()
@@ -182,8 +192,6 @@ class BB84:
             return
         if not BB84._forward_classical_message(eve, receiver_id, sender_id):
             return
-
-        print("Eve: Intercept-and-resend attack completed.")
 
     # Cascade Protocol Logic
 
@@ -233,7 +241,7 @@ class BB84:
             if is_match:
                 return working_key
 
-        print("Alice: Cascade failed. Keys do not match after all passes.")
+        print(f"{alice.host_id}: ERROR - Cascade reconciliation failed after all passes. Aborting protocol.")
         return None
 
     @staticmethod
@@ -289,7 +297,7 @@ class BB84:
             if is_match:
                 return working_key
 
-        print("Bob: Cascade failed. Keys do not match after all passes.")
+        print(f"{bob.host_id}: ERROR - Cascade reconciliation failed after all passes. Aborting protocol.")
         return None
 
     @staticmethod
@@ -311,7 +319,7 @@ class BB84:
 
             mismatch_in_left: bool = BB84._receive_classical(alice, bob_id, "CASCADE_SUB_MISMATCH")
             if mismatch_in_left is None:
-                return  # Exit if timeout occurs
+                return
             block = left if mismatch_in_left else block[mid:]
 
     @staticmethod
@@ -340,7 +348,7 @@ class BB84:
             block = left if mismatch_in_left else block[mid:]
 
         error_index: int = block[0]
-        key[error_index] ^= 1  # Flip the bit to correct the error
+        key[error_index] ^= 1
 
     # Helper Functions
 
@@ -364,29 +372,27 @@ class BB84:
         """
         message = host.get_next_classical(sender_id, wait=BB84.NETWORK_TIMEOUT)
 
-        # 1. Handle timeout
         if message is None:
-            print(f"{host.host_id}: Timeout waiting for {expected_type} message from {sender_id}.")
+            print(f"{host.host_id}: ERROR - Timeout waiting for '{expected_type}' message from {sender_id}. Aborting "
+                  f"protocol.")
             return None
 
         content = message.content
 
-        # 2. Enforce that all valid content must be a non-empty tuple
         if not isinstance(content, tuple) or not content:
-            print(f"{host.host_id}: Received malformed message content (not a non-empty tuple).")
+            print(f"{host.host_id}: ERROR - Received malformed message. Aborting protocol.")
             return None
 
-        # 3. Validate the message type and extract payload
         if expected_type:
             message_type = content[0]
             if message_type != expected_type:
-                print(f"{host.host_id}: Unexpected message type '{message_type}'. Expected '{expected_type}'.")
+                print(f"{host.host_id}: ERROR - Received unexpected message type '{message_type}' from {sender_id}. "
+                      f"Expected '{expected_type}'. Aborting protocol.")
                 return None
             payload = content[1:]
         else:
             payload = content
 
-        # 4. Return payload, unpacking single-item tuples
         if len(payload) == 1:
             return payload[0]
         return payload
@@ -406,7 +412,8 @@ class BB84:
         """
         message = host.get_next_classical(sender_id, wait=BB84.NETWORK_TIMEOUT)
         if message is None:
-            print(f"{host.host_id}: Timeout waiting for message from {sender_id}.")
+            print(f"{host.host_id}: ERROR - Timeout waiting for message from {sender_id} to forward. Aborting "
+                  f"protocol.")
             return False
 
         host.send_classical(receiver_id, message.content, await_ack=True)
@@ -460,12 +467,10 @@ def run_bb84(simulated_qber: float = 0.0, eavesdropper_present: bool = False) ->
         simulated_qber: The Quantum Bit Error Rate to simulate (0.0 to 1.0).
         eavesdropper_present: If True, an eavesdropper (Eve) is added to the network.
     """
-    print("-" * 50)
     if eavesdropper_present:
         print("--- Running BB84 Protocol WITH Eavesdropper ---")
     else:
         print(f"--- Running BB84 Protocol with QBER = {simulated_qber * 100:.1f}% ---")
-    print("-" * 50)
 
     network = Network.get_instance()
     network.start()
@@ -475,7 +480,6 @@ def run_bb84(simulated_qber: float = 0.0, eavesdropper_present: bool = False) ->
 
     if eavesdropper_present:
         host_eve = Host('Eve')
-        # Route communication through Eve
         host_alice.add_connection('Eve')
         host_eve.add_connection('Alice')
         host_eve.add_connection('Bob')
@@ -492,8 +496,6 @@ def run_bb84(simulated_qber: float = 0.0, eavesdropper_present: bool = False) ->
         host_eve.start()
 
     if eavesdropper_present:
-        # Alice sends to Eve, Eve to Bob
-        # Eve's presence introduces errors, so we set QBER to 0 for Bob
         t_alice = host_alice.run_protocol(BB84.alice_protocol, (host_eve.host_id,))
         t_eve = host_eve.run_protocol(BB84.eve_protocol, (host_alice.host_id, host_bob.host_id))
         t_bob = host_bob.run_protocol(BB84.bob_protocol, (host_eve.host_id, 0.0))
@@ -501,7 +503,6 @@ def run_bb84(simulated_qber: float = 0.0, eavesdropper_present: bool = False) ->
         t_eve.join()
         t_bob.join()
     else:
-        # Alice sends directly to Bob
         t_alice = host_alice.run_protocol(BB84.alice_protocol, (host_bob.host_id,))
         t_bob = host_bob.run_protocol(BB84.bob_protocol, (host_alice.host_id, simulated_qber))
         t_alice.join()
