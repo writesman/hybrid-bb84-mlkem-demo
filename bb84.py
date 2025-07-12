@@ -191,15 +191,15 @@ class BB84:
     # Cascade Protocol Logic
 
     @staticmethod
-    def _alice_cascade_protocol(alice: Host, bob_id: str, corrected_key_candidate: list[int], error_rate: float,
-                                seed: int = 42, max_passes: int = 10) -> list[int] | None:
+    def _alice_cascade_protocol(alice: Host, bob_id: str, noisy_key: list[int], error_rate: float, seed: int = 42,
+                                max_passes: int = 10) -> list[int] | None:
         """
         Alice's part of the Cascade error reconciliation protocol.
 
         Args:
             alice (Host): The Host object for Alice.
             bob_id (str): The ID of Bob.
-            corrected_key_candidate (list[int]): Alice's version of the sifted key.
+            noisy_key (list[int]): Alice's version of the sifted key.
             error_rate (float): The estimated QBER.
             seed (int): A seed for the random number generator.
             max_passes (int): The maximum number of passes for the Cascade protocol.
@@ -207,8 +207,8 @@ class BB84:
         Returns:
             list[int] | None: The reconciled key, or None if reconciliation fails.
         """
-        key = corrected_key_candidate.copy()
-        key_length = len(key)
+        working_key = noisy_key.copy()
+        key_length = len(working_key)
         initial_block_size = BB84._compute_initial_block_size(error_rate)
 
         for pass_num in range(max_passes):
@@ -219,16 +219,16 @@ class BB84:
             blocks = [indices[i:i + block_size] for i in range(0, key_length, block_size)]
 
             for block in blocks:
-                alice_parity = sum(key[i] for i in block) % 2
+                alice_parity = sum(working_key[i] for i in block) % 2
                 alice.send_classical(bob_id, ("CASCADE_BLOCK", block, alice_parity), await_ack=True)
                 content = BB84._receive_classical(alice, bob_id, "CASCADE_MISMATCH")
                 if content is None:
                     return None
                 mismatch = content[1]
                 if mismatch:
-                    BB84._alice_cascade_binary_search(alice, bob_id, key, block)
+                    BB84._alice_cascade_binary_search(alice, bob_id, working_key, block)
 
-            key_hash = hashlib.sha256("".join(map(str, key)).encode('utf-8')).digest()
+            key_hash = hashlib.sha256("".join(map(str, working_key)).encode('utf-8')).digest()
             alice.send_classical(bob_id, ("KEY_HASH", key_hash), await_ack=True)
 
             content = BB84._receive_classical(alice, bob_id, "KEY_HASH_ACK")
@@ -236,21 +236,21 @@ class BB84:
                 return None
             is_match = content[1]
             if is_match:
-                return key
+                return working_key
 
         print("Alice: Cascade failed. Keys do not match after all passes.")
         return None
 
     @staticmethod
-    def _bob_cascade_protocol(bob: Host, alice_id: str, corrected_key_candidate: list[int], error_rate: float,
-                              seed: int = 42, max_passes: int = 10) -> list[int] | None:
+    def _bob_cascade_protocol(bob: Host, alice_id: str, noisy_key: list[int], error_rate: float, seed: int = 42,
+                              max_passes: int = 10) -> list[int] | None:
         """
         Bob's part of the Cascade error reconciliation protocol.
 
         Args:
             bob (Host): The Host object for Bob.
             alice_id (str): The ID of Alice.
-            corrected_key_candidate (list[int]): Bob's version of the sifted key.
+            noisy_key (list[int]): Bob's version of the sifted key.
             error_rate (float): The estimated QBER.
             seed (int): A seed for the random number generator.
             max_passes (int): The maximum number of passes.
@@ -258,8 +258,8 @@ class BB84:
         Returns:
             list[int]: The reconciled key.
         """
-        key = corrected_key_candidate.copy()
-        key_length = len(key)
+        working_key = noisy_key.copy()
+        key_length = len(working_key)
         initial_block_size = BB84._compute_initial_block_size(error_rate)
 
         for pass_num in range(max_passes):
@@ -275,25 +275,25 @@ class BB84:
                     return None
 
                 block, alice_parity = content[1], content[2]
-                bob_parity = sum(key[i] for i in block) % 2
+                bob_parity = sum(working_key[i] for i in block) % 2
                 mismatch = (bob_parity != alice_parity)
                 bob.send_classical(alice_id, ("CASCADE_MISMATCH", mismatch), await_ack=True)
 
                 if mismatch:
-                    BB84._bob_cascade_binary_search(bob, alice_id, key, block)
+                    BB84._bob_cascade_binary_search(bob, alice_id, working_key, block)
 
             content = BB84._receive_classical(bob, alice_id, "KEY_HASH")
             if content is None:
                 return None
 
             key_hash = content[1]
-            bob_key_hash = hashlib.sha256("".join(map(str, key)).encode('utf-8')).digest()
+            bob_key_hash = hashlib.sha256("".join(map(str, working_key)).encode('utf-8')).digest()
 
             is_match = (bob_key_hash == key_hash)
             bob.send_classical(alice_id, ("KEY_HASH_ACK", is_match), await_ack=True)
 
             if is_match:
-                return key
+                return working_key
 
         print("Bob: Cascade failed. Keys do not match after all passes.")
         return None
@@ -389,16 +389,16 @@ class BB84:
         return content
 
     @staticmethod
-    def _forward_classical_message(host: Host, source_id: str, dest_id: str) -> bool:
+    def _forward_classical_message(host: Host, sender_id: str, receiver_id: str) -> bool:
         """
         Eve gets a message from a source and forwards it to a destination.
         """
-        message = host.get_next_classical(source_id, wait=BB84.NETWORK_TIMEOUT)
+        message = host.get_next_classical(sender_id, wait=BB84.NETWORK_TIMEOUT)
         if message is None:
-            print(f"{host.host_id}: Timeout waiting for message from {source_id}.")
+            print(f"{host.host_id}: Timeout waiting for message from {sender_id}.")
             return False
 
-        host.send_classical(dest_id, message.content, await_ack=True)
+        host.send_classical(receiver_id, message.content, await_ack=True)
         return True
 
     # Utility Functions
