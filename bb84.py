@@ -15,9 +15,10 @@ class BB84:
     KEY_LENGTH = 256
     KEY_CHECK_RATIO = 0.5
     MAX_ERROR_RATE = 15  # Max tolerable error rate in percent
+    NETWORK_TIMEOUT = 20 # wait time in seconds
 
     @staticmethod
-    def _privacy_amplification(sifted_bits: list) -> bytes:
+    def _privacy_amplification(sifted_bits: list) -> bytes | None:
         """
         Reduces any partial information an eavesdropper might have by hashing the key.
         """
@@ -31,7 +32,9 @@ class BB84:
 
     @staticmethod
     def compute_initial_block_size(error_rate_percent: float) -> int:
-        """Calculate initial block size based on error rate (percentage)."""
+        """
+        Calculate initial block size based on error rate (percentage).
+        """
         qber = error_rate_percent / 100
         if qber <= 0:
             return 16  # fallback default
@@ -40,6 +43,16 @@ class BB84:
     @staticmethod
     def _alice_cascade_protocol(alice: Host, bob_id: str, corrected_key_candidate: list[int], error_rate: float,
                                 seed: int = 42, max_passes: int = 10) -> list[int]:
+        """
+
+        :param alice:
+        :param bob_id:
+        :param corrected_key_candidate:
+        :param error_rate:
+        :param seed:
+        :param max_passes:
+        :return:
+        """
         key = corrected_key_candidate[:]  # Copy to avoid mutating input
         n = len(key)
         initial_block_size = BB84.compute_initial_block_size(error_rate)
@@ -66,8 +79,10 @@ class BB84:
             response = alice.get_next_classical(bob_id, wait=-1).content
 
             if response == "MATCH":
-                print("boom they matched")
                 break
+        if response != "MATCH":
+            print("Alice: Cascade failed. Keys do not match after all passes.")
+            return None
         return key
 
     @staticmethod
@@ -122,6 +137,7 @@ class BB84:
                     break
                 else:
                     bob.send_classical(alice_id, "MISMATCH", await_ack=True)
+
         return key
 
     @staticmethod
@@ -170,12 +186,14 @@ class BB84:
             alice.send_qubit(receiver_id, q, await_ack=False)
 
         # Step 3: Compare bases and create a sifted key.
-        alice.send_classical(receiver_id, alice_bases)
-        bob_bases = alice.get_next_classical(receiver_id, wait=-1).content
+        alice.send_classical(receiver_id, ("BASES", alice_bases))
+
+        msg_type, bob_bases = alice.get_next_classical(receiver_id, wait=-1).content
+        if msg_type != "BASES":
+            return None
 
         sifted_key_indices = [i for i in range(BB84.KEY_LENGTH) if alice_bases[i] == bob_bases[i]]
         sifted_key = [alice_bits[i] for i in sifted_key_indices]
-
         if not sifted_key:
             print("Alice: No matching bases, protocol failed.")
             return None
@@ -189,9 +207,10 @@ class BB84:
         sample_indices = sorted(random.sample(range(len(sifted_key)), num_samples))
         sample_values = [sifted_key[i] for i in sample_indices]
 
-        alice.send_classical(receiver_id, (sample_indices, sample_values), await_ack=True)
-        error_rate = alice.get_next_classical(receiver_id, wait=-1).content
-
+        alice.send_classical(receiver_id, ("SAMPLE INFO", sample_indices, sample_values), await_ack=True)
+        msg_type, error_rate = alice.get_next_classical(receiver_id, wait=-1).content
+        if msg_type != "ERROR RATE":
+            return None
         if error_rate > BB84.MAX_ERROR_RATE:
             print(f"Alice: Error rate measured ({error_rate:.2f}%) is too high! Aborting protocol.")
             return None
@@ -203,6 +222,12 @@ class BB84:
 
         # Step 6: Perform privacy amplification
         return BB84._privacy_amplification(reconciled_key)
+
+    @staticmethod
+    def _apply_depolarizing_noise(qubit: Qubit, qber: float):
+        if random.random() < qber:
+            error_gate = random.choice([qubit.X, qubit.Y, qubit.Z])
+            error_gate()
 
     @staticmethod
     def bob_protocol(bob: Host, sender_id: str, qber: float = 0.0):
@@ -220,18 +245,18 @@ class BB84:
         # Step 2: Measure incoming qubits.
         bob_measured_bits = []
         for i in range(BB84.KEY_LENGTH):
-            q = bob.get_qubit(sender_id, wait=-1)
-            if q:
-                if random.random() < qber:
-                    error_gate = random.choice([q.X, q.Y, q.Z])
-                    error_gate()
-                if bob_bases[i] == 'X':
-                    q.H()
-                bob_measured_bits.append(q.measure())
+            qubit = bob.get_qubit(sender_id, wait=-1)
+            BB84._apply_depolarizing_noise(qubit, qber)
+            if bob_bases[i] == 'X':
+                qubit.H()
+            bob_measured_bits.append(qubit.measure())
 
         # Step 3: Compare bases and create a sifted key.
-        alice_bases = bob.get_next_classical(sender_id, wait=-1).content
-        bob.send_classical(sender_id, bob_bases, await_ack=True)
+        msg_type, alice_bases = bob.get_next_classical(sender_id, wait=-1).content
+        if msg_type != "BASES":
+            return None
+
+        bob.send_classical(sender_id, ("BASES", bob_bases), await_ack=True)
 
         sifted_key = [bob_measured_bits[i] for i in range(len(bob_measured_bits)) if alice_bases[i] == bob_bases[i]]
         if not sifted_key:
@@ -239,12 +264,14 @@ class BB84:
             return None
 
         # Step 4: Calculate the error rate.
-        sample_indices, sample_values = bob.get_next_classical(sender_id, wait=-1).content
+        msg_type, sample_indices, sample_values = bob.get_next_classical(sender_id, wait=-1).content
+        if msg_type != "SAMPLE INFO":
+            return None
 
         mismatches = sum(1 for i, index in enumerate(sample_indices) if sifted_key[index] != sample_values[i])
 
         error_rate = (mismatches / len(sample_indices)) * 100 if sample_indices else 0.0
-        bob.send_classical(sender_id, error_rate, await_ack=True)
+        bob.send_classical(sender_id, ("ERROR RATE", error_rate), await_ack=True)
 
         if error_rate > BB84.MAX_ERROR_RATE:
             print(f"Bob: Error rate measured ({error_rate:.2f}%) is too high! Aborting protocol.")
@@ -281,17 +308,26 @@ class BB84:
 
         # Forwarding classical messages
         # Eve must wait for each message and forward it to maintain the protocol flow.
-        alice_bases = eve.get_next_classical(sender_id, wait=-1).content
-        eve.send_classical(receiver_id, alice_bases, await_ack=True)
+        msg_type, alice_bases = eve.get_next_classical(sender_id, wait=-1).content
+        if msg_type != "BASES":
+            return None
+        eve.send_classical(receiver_id, (msg_type, alice_bases), await_ack=True)
 
-        bob_bases = eve.get_next_classical(receiver_id, wait=-1).content
-        eve.send_classical(sender_id, bob_bases, await_ack=True)
+        msg_type, bob_bases = eve.get_next_classical(receiver_id, wait=-1).content
+        if msg_type != "BASES":
+            return None
+        eve.send_classical(sender_id, (msg_type, bob_bases), await_ack=True)
 
-        sample_info = eve.get_next_classical(sender_id, wait=-1).content
-        eve.send_classical(receiver_id, sample_info, await_ack=True)
+        msg_type, sample_indices, sample_values = eve.get_next_classical(sender_id, wait=-1).content
+        if msg_type != "SAMPLE INFO":
+            return None
+        eve.send_classical(receiver_id, (msg_type, sample_indices, sample_values), await_ack=True)
 
-        error_rate = eve.get_next_classical(receiver_id, wait=-1).content
-        eve.send_classical(sender_id, error_rate, await_ack=True)
+        msg_type, error_rate = eve.get_next_classical(receiver_id, wait=-1).content
+        if msg_type != "ERROR RATE":
+            return None
+        eve.send_classical(sender_id, (msg_type, error_rate), await_ack=True)
+
         print("Eve: Intercept-and-resend attack completed.")
 
 
