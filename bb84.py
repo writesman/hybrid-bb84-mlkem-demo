@@ -38,7 +38,7 @@ class BB84:
         return base64.urlsafe_b64encode(reconciled_key_digest)
 
     @staticmethod
-    def compute_initial_block_size(error_rate: float) -> int:
+    def _compute_initial_block_size(error_rate: float) -> int:
         """
         Calculates the initial block size for the Cascade protocol based on the estimated error rate.
 
@@ -51,6 +51,43 @@ class BB84:
         if error_rate <= 0:
             return 16  # fallback default
         return max(4, ceil(0.73 / error_rate))
+
+    @staticmethod
+    def _receive_classical(host: Host, sender_id: str, expected_type: str | tuple[str] = None) -> tuple | None:
+        """
+        Safely receives and unpacks a classical message.
+
+        Args:
+            host (Host): The QuNetSim host calling this function.
+            sender_id (str): ID of the expected message sender.
+            expected_type (str, optional): Expected message type.
+
+        Returns:
+            tuple | None: The unpacked message content if successful, or None on failure.
+        """
+        message = host.get_next_classical(sender_id, wait=BB84.NETWORK_TIMEOUT)
+
+        # 1. Handle timeout
+        if message is None:
+            print(f"{host.host_id}: Timeout waiting for message from {sender_id}.")
+            return None
+
+        content = message.content
+
+        # 2. Enforce that all valid content must be a non-empty tuple
+        if not isinstance(content, tuple) or not content:
+            print(f"{host.host_id}: Received malformed message content (not a non-empty tuple).")
+            return None
+
+        # 3. Handle message type validation if an expected type is provided
+        if expected_type:
+            message_type = content[0]
+            if message_type != expected_type:
+                print(f"{host.host_id}: Unexpected message type '{message_type}'. Expected '{expected_type}'.")
+                return None
+
+        # 4. On success, return the validated tuple content
+        return content
 
     @staticmethod
     def _alice_cascade_protocol(alice: Host, bob_id: str, corrected_key_candidate: list[int], error_rate: float,
@@ -71,7 +108,7 @@ class BB84:
         """
         key = corrected_key_candidate.copy()
         key_length = len(key)
-        initial_block_size = BB84.compute_initial_block_size(error_rate)
+        initial_block_size = BB84._compute_initial_block_size(error_rate)
 
         for pass_num in range(max_passes):
             block_size = initial_block_size * (2 ** pass_num)
@@ -135,7 +172,7 @@ class BB84:
         """
         key = corrected_key_candidate.copy()
         key_length = len(key)
-        initial_block_size = BB84.compute_initial_block_size(error_rate)
+        initial_block_size = BB84._compute_initial_block_size(error_rate)
 
         for pass_num in range(max_passes):
             block_size = initial_block_size * (2 ** pass_num)
