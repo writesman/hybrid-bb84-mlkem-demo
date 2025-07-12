@@ -472,36 +472,36 @@ def run_bb84(simulated_qber: float = 0.0, eavesdropper_present: bool = False) ->
 
     host_alice = Host('Alice')
     host_bob = Host('Bob')
+    hosts = [host_alice, host_bob]
+
+    threads = []
 
     if eavesdropper_present:
         host_eve = Host('Eve')
-        host_alice.add_connection('Eve')
-        host_eve.add_connection('Alice')
-        host_eve.add_connection('Bob')
-        host_bob.add_connection('Eve')
-        network.add_hosts([host_alice, host_bob, host_eve])
-    else:
-        host_alice.add_connection('Bob')
-        host_bob.add_connection('Alice')
-        network.add_hosts([host_alice, host_bob])
+        hosts.append(host_eve)
 
-    host_alice.start()
-    host_bob.start()
-    if eavesdropper_present:
-        host_eve.start()
+        host_alice.add_connection(host_eve.host_id)
+        host_eve.add_connection(host_alice.host_id)
+        host_eve.add_connection(host_bob.host_id)
+        host_bob.add_connection(host_eve.host_id)
 
-    if eavesdropper_present:
-        t_alice = host_alice.run_protocol(BB84.alice_protocol, (host_eve.host_id,))
-        t_eve = host_eve.run_protocol(BB84.eve_protocol, (host_alice.host_id, host_bob.host_id))
-        t_bob = host_bob.run_protocol(BB84.bob_protocol, (host_eve.host_id, 0.0))
-        t_alice.join()
-        t_eve.join()
-        t_bob.join()
+        threads.append(host_alice.run_protocol(BB84.alice_protocol, (host_eve.host_id,)))
+        threads.append(host_bob.run_protocol(BB84.bob_protocol, (host_eve.host_id, 0.0)))
+        threads.append(host_eve.run_protocol(BB84.eve_protocol, (host_alice.host_id, host_bob.host_id)))
     else:
-        t_alice = host_alice.run_protocol(BB84.alice_protocol, (host_bob.host_id,))
-        t_bob = host_bob.run_protocol(BB84.bob_protocol, (host_alice.host_id, simulated_qber))
-        t_alice.join()
-        t_bob.join()
+        host_alice.add_connection(host_bob.host_id)
+        host_bob.add_connection(host_alice.host_id)
+
+        threads.append(host_alice.run_protocol(BB84.alice_protocol, (host_bob.host_id,)))
+        threads.append(host_bob.run_protocol(BB84.bob_protocol, (host_alice.host_id, simulated_qber)))
+
+    network.add_hosts(hosts)
+
+    for host in hosts:
+        host.start()
+
+    for thread in threads:
+        thread.join()
 
     network.stop(True)
 
@@ -522,7 +522,7 @@ def main() -> None:
             "eavesdropper_present": False
         },
         {
-            "description": "10% channel noise (should succeed or fail)",
+            "description": "10% channel noise (may succeed or fail)",
             "simulated_qber": 0.10,
             "eavesdropper_present": False
         },
@@ -541,6 +541,7 @@ def main() -> None:
     for i, scenario in enumerate(scenarios):
         print(f"===== Scenario {i + 1}: {scenario['description']} =====")
         run_bb84(simulated_qber=scenario['simulated_qber'], eavesdropper_present=scenario['eavesdropper_present'])
+
 
 if __name__ == '__main__':
     main()
