@@ -4,37 +4,37 @@ import base64
 from qunetsim.components import Host, Network
 from qunetsim.objects import Qubit, Logger
 from math import ceil
+from typing import Any
 
 Logger.DISABLED = True
 
 
 class BB84:
     """
-    Encapsulates the BB84 protocol logic, including an optional eavesdropper and Quantum Bit Error Rate (QBER)
-    simulation.
+    Encapsulates the BB84 protocol logic, including an optional eavesdropper and QBER simulation.
     """
-    KEY_LENGTH = 256
-    KEY_CHECK_RATIO = 0.5  # Amount of the sifted key to compare
-    MAX_ERROR_RATE = 0.15  # Max tolerable error rate in percent
-    NETWORK_TIMEOUT = 20  # Wait time in seconds
+    KEY_LENGTH: int = 256
+    KEY_CHECK_RATIO: float = 0.5  # Amount of the sifted key to compare
+    MAX_QBER: float = 0.15  # Max tolerable QBER
+    NETWORK_TIMEOUT: int = 20  # Wait time in seconds
 
     # Protocol Entry Points
 
     @staticmethod
-    def alice_protocol(alice: Host, receiver_id: str):
+    def alice_protocol(alice: Host, receiver_id: str) -> bytes | None:
         """
-        The complete BB84 protocol from Alice's perspective.
+        Executes the full BB84 protocol from Alice's perspective.
 
         Args:
-            alice (Host): The Host object for Alice.
-            receiver_id (str): The ID of the intended receiver.
+            alice: The Host object for Alice.
+            receiver_id: The network ID of the intended receiver (Bob).
 
         Returns:
-            bytes | None: The final, secure key, or None if the protocol fails.
+            The final, secure key as a bytes object, or None if the protocol fails.
         """
         # Step 1: Generate random bits and bases
-        alice_bits = [random.randint(0, 1) for _ in range(BB84.KEY_LENGTH)]
-        alice_bases = [random.choice(['Z', 'X']) for _ in range(BB84.KEY_LENGTH)]
+        alice_bits: list[int] = [random.randint(0, 1) for _ in range(BB84.KEY_LENGTH)]
+        alice_bases: list[str] = [random.choice(['Z', 'X']) for _ in range(BB84.KEY_LENGTH)]
 
         # Step 2: Create and send qubits
         for i in range(BB84.KEY_LENGTH):
@@ -48,66 +48,66 @@ class BB84:
         # Step 3: Compare bases with Bob to create the sifted key
         alice.send_classical(receiver_id, ("BASES", alice_bases), await_ack=True)
 
-        bob_bases = BB84._receive_classical(alice, receiver_id, "BASES")
+        bob_bases: list[str] = BB84._receive_classical(alice, receiver_id, "BASES")
         if bob_bases is None:
             return None
 
-        sifted_key_indices = [i for i in range(BB84.KEY_LENGTH) if alice_bases[i] == bob_bases[i]]
-        sifted_key = [alice_bits[i] for i in sifted_key_indices]
+        sifted_key_indices: list[int] = [i for i in range(BB84.KEY_LENGTH) if alice_bases[i] == bob_bases[i]]
+        sifted_key: list[int] = [alice_bits[i] for i in sifted_key_indices]
 
         if not sifted_key:
             print("Alice: No matching bases, protocol failed.")
             return None
 
         # Step 4: Perform error checking by comparing a sample of the key
-        num_samples = ceil(len(sifted_key) * BB84.KEY_CHECK_RATIO)
+        num_samples: int = ceil(len(sifted_key) * BB84.KEY_CHECK_RATIO)
         if num_samples == 0:
             print("Alice: Sifted key is too short for error checking. Aborting.")
             return None
 
-        sample_indices = sorted(random.sample(range(len(sifted_key)), num_samples))
-        sample_values = [sifted_key[i] for i in sample_indices]
+        sample_indices: list[int] = sorted(random.sample(range(len(sifted_key)), num_samples))
+        sample_values: list[int] = [sifted_key[i] for i in sample_indices]
         alice.send_classical(receiver_id, ("SAMPLE_INFO", sample_indices, sample_values))
 
-        error_rate = BB84._receive_classical(alice, receiver_id, "ERROR_RATE")
-        if error_rate is None:
+        estimated_qber: float = BB84._receive_classical(alice, receiver_id, "ERROR_RATE")
+        if estimated_qber is None:
             return None
 
-        if error_rate > BB84.MAX_ERROR_RATE:
-            print(f"Alice: Error rate measured ({error_rate * 100:.2f}%) is too high! Aborting protocol.")
+        if estimated_qber > BB84.MAX_QBER:
+            print(f"Alice: Error rate measured ({estimated_qber * 100:.2f}%) is too high! Aborting protocol.")
             return None
 
         # Step 5: Perform error reconciliation (Cascade)
-        noisy_key = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
-        reconciled_key = BB84._alice_cascade_protocol(alice, receiver_id, noisy_key, error_rate)
+        noisy_key: list[int] = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
+        reconciled_key: list[int] | None = BB84._alice_cascade_protocol(alice, receiver_id, noisy_key, estimated_qber)
 
         # Step 6: Perform privacy amplification and return the final key
         return BB84._privacy_amplification(reconciled_key)
 
     @staticmethod
-    def bob_protocol(bob: Host, sender_id: str, qber: float = 0.0) -> bytes | None:
+    def bob_protocol(bob: Host, sender_id: str, simulated_qber: float = 0.0) -> bytes | None:
         """
-        The complete BB84 protocol from Bob's perspective.
+        Executes the full BB84 protocol from Bob's perspective.
 
         Args:
-            bob (Host): The Host object for Bob.
-            sender_id (str): The ID of the sender (Alice or Eve).
-            qber (float): The QBER to simulate for channel noise.
+            bob: The Host object for Bob.
+            sender_id: The network ID of the sender (Alice or Eve).
+            simulated_qber: The QBER to simulate for channel noise.
 
         Returns:
-            bytes | None: The final, secure key, or None if the protocol fails.
+            The final, secure key as a bytes object, or None if the protocol fails.
         """
         # Step 1: Generate random bases for measurement
-        bob_bases = [random.choice(['Z', 'X']) for _ in range(BB84.KEY_LENGTH)]
+        bob_bases: list[str] = [random.choice(['Z', 'X']) for _ in range(BB84.KEY_LENGTH)]
 
         # Step 2: Receive and measure qubits
-        bob_measured_bits = []
+        bob_measured_bits: list[int] = []
         for i in range(BB84.KEY_LENGTH):
             qubit = bob.get_qubit(sender_id, wait=BB84.NETWORK_TIMEOUT)
             if qubit is None:
                 print(f"Bob: Timeout waiting for qubit {i + 1}. Aborting.")
                 return None
-            if random.random() < qber:
+            if random.random() < simulated_qber:
                 error_gate = random.choice([qubit.X, qubit.Y, qubit.Z])
                 error_gate()
             if bob_bases[i] == 'X':
@@ -115,34 +115,35 @@ class BB84:
             bob_measured_bits.append(qubit.measure())
 
         # Step 3: Compare bases with Alice to create the sifted key
-        alice_bases = BB84._receive_classical(bob, sender_id, "BASES")
+        alice_bases: list[str] = BB84._receive_classical(bob, sender_id, "BASES")
         if alice_bases is None:
             return None
 
         bob.send_classical(sender_id, ("BASES", bob_bases), await_ack=True)
 
-        sifted_key_indices = [i for i in range(BB84.KEY_LENGTH) if alice_bases[i] == bob_bases[i]]
-        sifted_key = [bob_measured_bits[i] for i in sifted_key_indices]
+        sifted_key_indices: list[int] = [i for i in range(BB84.KEY_LENGTH) if alice_bases[i] == bob_bases[i]]
+        sifted_key: list[int] = [bob_measured_bits[i] for i in sifted_key_indices]
         if not sifted_key:
             print("Bob: No matching bases, protocol failed.")
             return None
 
         # Step 4: Calculate the error rate
-        sample_indices, sample_values = BB84._receive_classical(bob, sender_id, "SAMPLE_INFO")
-        if sample_indices is None or sample_values is None:
+        payload: tuple | None = BB84._receive_classical(bob, sender_id, "SAMPLE_INFO")
+        if payload is None:
             return None
+        sample_indices, sample_values = payload
 
-        mismatches = sum(1 for i, index in enumerate(sample_indices) if sifted_key[index] != sample_values[i])
-        error_rate = (mismatches / len(sample_indices)) if sample_indices else 0.0
-        bob.send_classical(sender_id, ("ERROR_RATE", error_rate))
+        mismatches: int = sum(1 for i, index in enumerate(sample_indices) if sifted_key[index] != sample_values[i])
+        estimated_qber: float = (mismatches / len(sample_indices)) if sample_indices else 0.0
+        bob.send_classical(sender_id, ("ERROR_RATE", estimated_qber))
 
-        if error_rate > BB84.MAX_ERROR_RATE:
-            print(f"Bob: Error rate measured ({error_rate * 100:.2f}%) is too high! Aborting protocol.")
+        if estimated_qber > BB84.MAX_QBER:
+            print(f"Bob: Error rate measured ({estimated_qber * 100:.2f}%) is too high! Aborting protocol.")
             return None
 
         # Step 5: Perform error reconciliation (Cascade)
-        noisy_key = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
-        reconciled_key = BB84._bob_cascade_protocol(bob, sender_id, noisy_key, error_rate)
+        noisy_key: list[int] = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
+        reconciled_key: list[int] | None = BB84._bob_cascade_protocol(bob, sender_id, noisy_key, estimated_qber)
 
         # Step 6: Perform privacy amplification and return the final key
         return BB84._privacy_amplification(reconciled_key)
@@ -150,16 +151,16 @@ class BB84:
     @staticmethod
     def eve_protocol(eve: Host, sender_id: str, receiver_id: str) -> None:
         """
-        Eve's eavesdropping protocol using an intercept-and-resend attack.
+        Executes an intercept-and-resend eavesdropping attack.
 
         Args:
-            eve (Host): The Host object for Eve.
-            sender_id (str): The ID of the original sender (Alice).
-            receiver_id (str): The ID of the intended receiver (Bob).
+            eve: The Host object for Eve.
+            sender_id: The network ID of the original sender (Alice).
+            receiver_id: The network ID of the intended receiver (Bob).
         """
         # Quantum interception
         for _ in range(BB84.KEY_LENGTH):
-            qubit = eve.get_qubit(sender_id, wait=BB84.NETWORK_TIMEOUT)
+            qubit: Qubit = eve.get_qubit(sender_id, wait=BB84.NETWORK_TIMEOUT)
             eve_basis = random.choice(['Z', 'X'])
             if eve_basis == 'X':
                 qubit.H()
@@ -187,46 +188,46 @@ class BB84:
     # Cascade Protocol Logic
 
     @staticmethod
-    def _alice_cascade_protocol(alice: Host, bob_id: str, noisy_key: list[int], error_rate: float, seed: int = 42,
+    def _alice_cascade_protocol(alice: Host, bob_id: str, noisy_key: list[int], estimated_qber: float, seed: int = 42,
                                 max_passes: int = 10) -> list[int] | None:
         """
-        Alice's part of the Cascade error reconciliation protocol.
+        Executes Alice's part of the Cascade error reconciliation protocol.
 
         Args:
-            alice (Host): The Host object for Alice.
-            bob_id (str): The ID of Bob.
-            noisy_key (list[int]): Alice's version of the sifted key.
-            error_rate (float): The estimated QBER.
-            seed (int): A seed for the random number generator.
-            max_passes (int): The maximum number of passes for the Cascade protocol.
+            alice: The Host object for Alice.
+            bob_id: The network ID of Bob.
+            noisy_key: Alice's version of the sifted key, possibly with errors.
+            estimated_qber: The QBER calculated from the key sampling phase.
+            seed: A seed for the random number generator to ensure blocks are the same for both parties.
+            max_passes: The maximum number of passes for the Cascade protocol.
 
         Returns:
-            list[int] | None: The reconciled key, or None if reconciliation fails.
+            The reconciled key as a list of integers, or None if reconciliation fails.
         """
-        working_key = noisy_key.copy()
-        key_length = len(working_key)
-        initial_block_size = BB84._compute_initial_block_size(error_rate)
+        working_key: list[int] = noisy_key.copy()
+        key_length: int = len(working_key)
+        initial_block_size: int = BB84._compute_initial_block_size(estimated_qber)
 
         for pass_num in range(max_passes):
-            block_size = initial_block_size * (2 ** pass_num)
-            indices = list(range(key_length))
+            block_size: int = initial_block_size * (2 ** pass_num)
+            indices: list[int] = list(range(key_length))
             random.seed(seed + pass_num)
             random.shuffle(indices)
-            blocks = [indices[i:i + block_size] for i in range(0, key_length, block_size)]
+            blocks: list[list[int]] = [indices[i:i + block_size] for i in range(0, key_length, block_size)]
 
             for block in blocks:
-                alice_parity = sum(working_key[i] for i in block) % 2
+                alice_parity: int = sum(working_key[i] for i in block) % 2
                 alice.send_classical(bob_id, ("CASCADE_BLOCK", block, alice_parity), await_ack=True)
-                mismatch = BB84._receive_classical(alice, bob_id, "CASCADE_MISMATCH")
+                mismatch: bool = BB84._receive_classical(alice, bob_id, "CASCADE_MISMATCH")
                 if mismatch is None:
                     return None
                 if mismatch:
                     BB84._alice_cascade_binary_search(alice, bob_id, working_key, block)
 
-            key_hash = hashlib.sha256("".join(map(str, working_key)).encode('utf-8')).digest()
+            key_hash: bytes = hashlib.sha256("".join(map(str, working_key)).encode('utf-8')).digest()
             alice.send_classical(bob_id, ("KEY_HASH", key_hash), await_ack=True)
 
-            is_match = BB84._receive_classical(alice, bob_id, "KEY_HASH_ACK")
+            is_match: bool = BB84._receive_classical(alice, bob_id, "KEY_HASH_ACK")
             if is_match is None:
                 return None
             if is_match:
@@ -236,52 +237,53 @@ class BB84:
         return None
 
     @staticmethod
-    def _bob_cascade_protocol(bob: Host, alice_id: str, noisy_key: list[int], error_rate: float, seed: int = 42,
+    def _bob_cascade_protocol(bob: Host, alice_id: str, noisy_key: list[int], estimated_qber: float, seed: int = 42,
                               max_passes: int = 10) -> list[int] | None:
         """
-        Bob's part of the Cascade error reconciliation protocol.
+        Executes Bob's part of the Cascade error reconciliation protocol.
 
         Args:
-            bob (Host): The Host object for Bob.
-            alice_id (str): The ID of Alice.
-            noisy_key (list[int]): Bob's version of the sifted key.
-            error_rate (float): The estimated QBER.
-            seed (int): A seed for the random number generator.
-            max_passes (int): The maximum number of passes.
+            bob: The Host object for Bob.
+            alice_id: The network ID of Alice.
+            noisy_key: Bob's version of the sifted key, possibly with errors.
+            estimated_qber: The calculated QBER.
+            seed: A seed for the random number generator.
+            max_passes: The maximum number of passes.
 
         Returns:
-            list[int]: The reconciled key.
+            The reconciled key as a list of integers, or None if reconciliation fails.
         """
-        working_key = noisy_key.copy()
-        key_length = len(working_key)
-        initial_block_size = BB84._compute_initial_block_size(error_rate)
+        working_key: list[int] = noisy_key.copy()
+        key_length: int = len(working_key)
+        initial_block_size: int = BB84._compute_initial_block_size(estimated_qber)
 
         for pass_num in range(max_passes):
-            block_size = initial_block_size * (2 ** pass_num)
-            indices = list(range(key_length))
+            block_size: int = initial_block_size * (2 ** pass_num)
+            indices: list[int] = list(range(key_length))
             random.seed(seed + pass_num)
             random.shuffle(indices)
-            num_blocks = ceil(key_length / block_size)
+            num_blocks: int = ceil(key_length / block_size)
 
             for _ in range(num_blocks):
-                block, alice_parity = BB84._receive_classical(bob, alice_id, "CASCADE_BLOCK")
-                if block is None or alice_parity is None:
+                payload: tuple | None = BB84._receive_classical(bob, alice_id, "CASCADE_BLOCK")
+                if payload is None:
                     return None
+                block, alice_parity = payload
 
-                bob_parity = sum(working_key[i] for i in block) % 2
-                mismatch = (bob_parity != alice_parity)
+                bob_parity: int = sum(working_key[i] for i in block) % 2
+                mismatch: bool = (bob_parity != alice_parity)
                 bob.send_classical(alice_id, ("CASCADE_MISMATCH", mismatch), await_ack=True)
 
                 if mismatch:
                     BB84._bob_cascade_binary_search(bob, alice_id, working_key, block)
 
-            key_hash = BB84._receive_classical(bob, alice_id, "KEY_HASH")
+            key_hash: bytes = BB84._receive_classical(bob, alice_id, "KEY_HASH")
             if key_hash is None:
                 return None
 
-            bob_key_hash = hashlib.sha256("".join(map(str, working_key)).encode('utf-8')).digest()
+            bob_key_hash: bytes = hashlib.sha256("".join(map(str, working_key)).encode('utf-8')).digest()
 
-            is_match = (bob_key_hash == key_hash)
+            is_match: bool = (bob_key_hash == key_hash)
             bob.send_classical(alice_id, ("KEY_HASH_ACK", is_match), await_ack=True)
 
             if is_match:
@@ -293,63 +295,72 @@ class BB84:
     @staticmethod
     def _alice_cascade_binary_search(alice: Host, bob_id: str, key: list[int], block: list[int]) -> None:
         """
-        Alice's part of the binary search to find an error in a block.
+        Executes Alice's part of the binary search to find an error in a block.
 
         Args:
-            alice (Host): The Host object for Alice.
-            bob_id (str): The ID of Bob.
-            key (list[int]): Alice's key.
-            block (list[int]): The block of indices with a parity mismatch.
+            alice: The Host object for Alice.
+            bob_id: The network ID of Bob.
+            key: Alice's working key.
+            block: The list of indices in the key that has a parity mismatch.
         """
         while len(block) > 1:
-            mid = len(block) // 2
-            left = block[:mid]
-            left_parity = sum(key[i] for i in left) % 2
+            mid: int = len(block) // 2
+            left: list[int] = block[:mid]
+            left_parity: int = sum(key[i] for i in left) % 2
             alice.send_classical(bob_id, ("CASCADE_SUB_PARITY", left_parity), await_ack=True)
-            mismatch_in_left = BB84._receive_classical(alice, bob_id, "CASCADE_SUB_MISMATCH")
+
+            mismatch_in_left: bool = BB84._receive_classical(alice, bob_id, "CASCADE_SUB_MISMATCH")
             if mismatch_in_left is None:
-                return
+                return  # Exit if timeout occurs
             block = left if mismatch_in_left else block[mid:]
 
     @staticmethod
     def _bob_cascade_binary_search(bob: Host, alice_id: str, key: list[int], block: list[int]) -> None:
         """
-        Bob's part of the binary search to find and correct an error in a block.
+        Executes Bob's part of the binary search to find and correct an error in a block.
 
         Args:
-            bob (Host): The Host object for Bob.
-            alice_id (str): The ID of Alice.
-            key (list[int]): Bob's key, which will be corrected in place.
-            block (list[int]): The block of indices with a parity mismatch.
+            bob: The Host object for Bob.
+            alice_id: The network ID of Alice.
+            key: Bob's working key (will be corrected in place).
+            block: The list of indices in the key that has a parity mismatch.
         """
         while len(block) > 1:
-            mid = len(block) // 2
-            left = block[:mid]
+            mid: int = len(block) // 2
+            left: list[int] = block[:mid]
 
-            alice_left_parity = BB84._receive_classical(bob, alice_id, "CASCADE_SUB_PARITY")
+            alice_left_parity: int = BB84._receive_classical(bob, alice_id, "CASCADE_SUB_PARITY")
             if alice_left_parity is None:
                 return
 
-            bob_left_parity = sum(key[i] for i in left) % 2
-            mismatch_in_left = (alice_left_parity != bob_left_parity)
+            bob_left_parity: int = sum(key[i] for i in left) % 2
+            mismatch_in_left: bool = (alice_left_parity != bob_left_parity)
             bob.send_classical(alice_id, ("CASCADE_SUB_MISMATCH", mismatch_in_left), await_ack=True)
 
             block = left if mismatch_in_left else block[mid:]
 
-        error_index = block[0]
-        key[error_index] ^= 1  # Flip the bit
+        error_index: int = block[0]
+        key[error_index] ^= 1  # Flip the bit to correct the error
 
     # Helper Functions
 
     @staticmethod
-    def _receive_classical(host: Host, sender_id: str, expected_type: str | tuple[str] = None):
+    def _receive_classical(host: Host, sender_id: str, expected_type: str | None = None) -> Any | None:
         """
         Safely receives and unpacks a classical message.
 
+        If an `expected_type` is provided and validated, the payload is returned.
+        If not provided, the entire message content is returned. The function
+        automatically unpacks single-item payloads from their tuple wrapper.
+
         Args:
-            host (Host): The QuNetSim host calling this function.
-            sender_id (str): ID of the expected message sender.
-            expected_type (str, optional): Expected message type.
+            host: The QuNetSim host receiving the message.
+            sender_id: The network ID of the expected sender.
+            expected_type: The expected type string of the message.
+
+        Returns:
+            The message payload. This can be a single value or a tuple of values.
+            Returns None on timeout or if the message is malformed or unexpected.
         """
         message = host.get_next_classical(sender_id, wait=BB84.NETWORK_TIMEOUT)
 
@@ -365,7 +376,7 @@ class BB84:
             print(f"{host.host_id}: Received malformed message content (not a non-empty tuple).")
             return None
 
-        # 3. Validate message type
+        # 3. Validate the message type and extract payload
         if expected_type:
             message_type = content[0]
             if message_type != expected_type:
@@ -375,7 +386,7 @@ class BB84:
         else:
             payload = content
 
-        # 4. Return payload
+        # 4. Return payload, unpacking single-item tuples
         if len(payload) == 1:
             return payload[0]
         return payload
@@ -383,7 +394,15 @@ class BB84:
     @staticmethod
     def _forward_classical_message(host: Host, sender_id: str, receiver_id: str) -> bool:
         """
-        Eve gets a message from a source and forwards it to a destination.
+        Intercepts a message from a source and forwards it to a destination.
+
+        Args:
+            host: The host performing the forwarding (Eve).
+            sender_id: The original sender of the message.
+            receiver_id: The intended destination of the message.
+
+        Returns:
+            True if forwarding was successful, False on timeout.
         """
         message = host.get_next_classical(sender_id, wait=BB84.NETWORK_TIMEOUT)
         if message is None:
@@ -396,15 +415,17 @@ class BB84:
     # Utility Functions
 
     @staticmethod
-    def _privacy_amplification(reconciled_key: list) -> bytes | None:
+    def _privacy_amplification(reconciled_key: list[int] | None) -> bytes | None:
         """
-        Reduces any partial information an eavesdropper might have by hashing the key.
+        Reduces partial information an eavesdropper might have by hashing the key.
+
+        This creates a shorter, more secure key from the reconciled key.
 
         Args:
-            reconciled_key (list[int]): The reconciled key bits.
+            reconciled_key: The error-corrected key bits.
 
         Returns:
-            bytes | None: A URL-safe, base64-encoded secure key, or None if the input is empty.
+            A URL-safe, base64-encoded secure key as a bytes object, or None if the input is empty.
         """
         if not reconciled_key:
             return None
@@ -415,35 +436,35 @@ class BB84:
         return base64.urlsafe_b64encode(reconciled_key_digest)
 
     @staticmethod
-    def _compute_initial_block_size(error_rate: float) -> int:
+    def _compute_initial_block_size(estimated_qber: float) -> int:
         """
         Calculates the initial block size for the Cascade protocol based on the estimated error rate.
 
         Args:
-            error_rate (float): The estimated QBER.
+            estimated_qber: The estimated QBER from the key sample.
 
         Returns:
-            int: The calculated initial block size.
+            The calculated initial block size.
         """
-        if error_rate <= 0:
-            return 16  # fallback default
+        if estimated_qber <= 0:
+            return 16  # Fallback for a zero-error scenario
         # 0.73 is an efficiency factor commonly used for the Cascade protocol.
-        return max(4, ceil(0.73 / error_rate))
+        return max(4, ceil(0.73 / estimated_qber))
 
 
-def run_bb84(qber=0.0, eavesdropper_present=False) -> None:
+def run_bb84(simulated_qber: float = 0.0, eavesdropper_present: bool = False) -> None:
     """
     Sets up and runs a simulation of the BB84 protocol.
 
     Args:
-        qber (float): The Quantum Bit Error Rate to simulate (0.0 to 1.0).
-        eavesdropper_present (bool): If True, an eavesdropper (Eve) is added.
+        simulated_qber: The Quantum Bit Error Rate to simulate (0.0 to 1.0).
+        eavesdropper_present: If True, an eavesdropper (Eve) is added to the network.
     """
     print("-" * 50)
     if eavesdropper_present:
-        print(f"--- Running BB84 Protocol WITH Eavesdropper ---")
+        print("--- Running BB84 Protocol WITH Eavesdropper ---")
     else:
-        print(f"--- Running BB84 Protocol with QBER = {qber * 100:.1f}% ---")
+        print(f"--- Running BB84 Protocol with QBER = {simulated_qber * 100:.1f}% ---")
     print("-" * 50)
 
     network = Network.get_instance()
@@ -482,7 +503,7 @@ def run_bb84(qber=0.0, eavesdropper_present=False) -> None:
     else:
         # Alice sends directly to Bob
         t_alice = host_alice.run_protocol(BB84.alice_protocol, (host_bob.host_id,))
-        t_bob = host_bob.run_protocol(BB84.bob_protocol, (host_alice.host_id, qber))
+        t_bob = host_bob.run_protocol(BB84.bob_protocol, (host_alice.host_id, simulated_qber))
         t_alice.join()
         t_bob.join()
 
@@ -491,16 +512,16 @@ def run_bb84(qber=0.0, eavesdropper_present=False) -> None:
 
 if __name__ == '__main__':
     # Scenario 1: No noise, no eavesdropper (should succeed)
-    run_bb84(qber=0.00, eavesdropper_present=False)
+    run_bb84(simulated_qber=0.00, eavesdropper_present=False)
 
     # Scenario 2: 5% channel noise (should succeed)
-    run_bb84(qber=0.05, eavesdropper_present=False)
+    run_bb84(simulated_qber=0.05, eavesdropper_present=False)
 
     # Scenario 3: 10% channel noise (might succeed or fail, close to the limit)
-    run_bb84(qber=0.10, eavesdropper_present=False)
+    run_bb84(simulated_qber=0.10, eavesdropper_present=False)
 
     # Scenario 4: 20% channel noise (should fail)
-    run_bb84(qber=0.20, eavesdropper_present=False)
+    run_bb84(simulated_qber=0.20, eavesdropper_present=False)
 
     # Scenario 5: With an eavesdropper (should detect high error rate and fail)
-    run_bb84(qber=0.0, eavesdropper_present=True)
+    run_bb84(simulated_qber=0.0, eavesdropper_present=True)
