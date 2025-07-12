@@ -467,11 +467,6 @@ def run_bb84(simulated_qber: float = 0.0, eavesdropper_present: bool = False) ->
         simulated_qber: The Quantum Bit Error Rate to simulate (0.0 to 1.0).
         eavesdropper_present: If True, an eavesdropper (Eve) is added to the network.
     """
-    if eavesdropper_present:
-        print("--- Running BB84 Protocol WITH Eavesdropper ---")
-    else:
-        print(f"--- Running BB84 Protocol with QBER = {simulated_qber * 100:.1f}% ---")
-
     network = Network.get_instance()
     network.start()
 
@@ -511,18 +506,41 @@ def run_bb84(simulated_qber: float = 0.0, eavesdropper_present: bool = False) ->
     network.stop(True)
 
 
+def main() -> None:
+    """
+    Runs a series of predefined scenarios for the BB84 simulation.
+    """
+    scenarios = [
+        {
+            "description": "No noise, no eavesdropper (should succeed)",
+            "simulated_qber": 0.00,
+            "eavesdropper_present": False
+        },
+        {
+            "description": "5% channel noise (should succeed)",
+            "simulated_qber": 0.05,
+            "eavesdropper_present": False
+        },
+        {
+            "description": "10% channel noise (should succeed or fail)",
+            "simulated_qber": 0.10,
+            "eavesdropper_present": False
+        },
+        {
+            "description": "20% channel noise (should fail)",
+            "simulated_qber": 0.20,
+            "eavesdropper_present": False
+        },
+        {
+            "description": "With an eavesdropper (should fail)",
+            "simulated_qber": 0.0,
+            "eavesdropper_present": True
+        }
+    ]
+
+    for i, scenario in enumerate(scenarios):
+        print(f"===== Scenario {i + 1}: {scenario['description']} =====")
+        run_bb84(simulated_qber=scenario['simulated_qber'], eavesdropper_present=scenario['eavesdropper_present'])
+
 if __name__ == '__main__':
-    # Scenario 1: No noise, no eavesdropper (should succeed)
-    run_bb84(simulated_qber=0.00, eavesdropper_present=False)
-
-    # Scenario 2: 5% channel noise (should succeed)
-    run_bb84(simulated_qber=0.05, eavesdropper_present=False)
-
-    # Scenario 3: 10% channel noise (might succeed or fail, close to the limit)
-    run_bb84(simulated_qber=0.10, eavesdropper_present=False)
-
-    # Scenario 4: 20% channel noise (should fail)
-    run_bb84(simulated_qber=0.20, eavesdropper_present=False)
-
-    # Scenario 5: With an eavesdropper (should detect high error rate and fail)
-    run_bb84(simulated_qber=0.0, eavesdropper_present=True)
+    main()
