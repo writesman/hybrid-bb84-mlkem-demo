@@ -169,8 +169,9 @@ class BB84:
         eve_bases: list[str] = [random.choice(['Z', 'X']) for _ in range(BB84.KEY_LENGTH)]
 
         for i in range(BB84.KEY_LENGTH):
-            qubit: Qubit = eve.get_qubit(sender_id, wait=BB84.NETWORK_TIMEOUT)
+            qubit = eve.get_qubit(sender_id)
             if qubit is None:
+                print(f"{eve.host_id}: ERROR - Timeout waiting for qubit {i + 1} from {sender_id}. Aborting protocol.")
                 return
             if eve_bases[i] == 'X':
                 qubit.H()
@@ -518,11 +519,6 @@ def main() -> None:
     """
     scenarios = [
         {
-            "description": "With an eavesdropper (should fail)",
-            "simulated_qber": 0.0,
-            "eavesdropper_present": True
-        },
-        {
             "description": "No noise, no eavesdropper (should succeed)",
             "simulated_qber": 0.00,
             "eavesdropper_present": False
@@ -541,7 +537,12 @@ def main() -> None:
             "description": "20% channel noise (should fail)",
             "simulated_qber": 0.20,
             "eavesdropper_present": False
-        }
+        },
+        {
+            "description": "With an eavesdropper (should fail)",
+            "simulated_qber": 0.0,
+            "eavesdropper_present": True
+        },
     ]
 
     for i, scenario in enumerate(scenarios):
