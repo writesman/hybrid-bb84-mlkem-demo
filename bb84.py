@@ -9,6 +9,13 @@ from typing import Any
 Logger.DISABLED = True
 
 
+class BB84ProtocolError(Exception):
+    """
+    Custom exception for errors during the BB84 protocol.
+    """
+    pass
+
+
 class BB84:
     """
     Encapsulates the BB84 protocol logic, including an optional eavesdropper and QBER simulation.
@@ -169,48 +176,35 @@ class BB84:
             sender_id: The network ID of the original sender (Alice).
             receiver_id: The network ID of the intended receiver (Bob).
         """
-        eve_bases: list[str] = [random.choice(['Z', 'X']) for _ in range(BB84.KEY_LENGTH)]
+        try:
+            # Intercept and resend qubits
+            eve_bases: list[str] = [random.choice(['Z', 'X']) for _ in range(BB84.KEY_LENGTH)]
+            for i in range(BB84.KEY_LENGTH):
+                qubit = eve.get_qubit(sender_id, wait=BB84.NETWORK_TIMEOUT)
+                if qubit is None:
+                    raise BB84ProtocolError(f"Timeout waiting for qubit {i + 1}")
 
-        for i in range(BB84.KEY_LENGTH):
-            qubit = eve.get_qubit(sender_id, wait=BB84.NETWORK_TIMEOUT)
-            if qubit is None:
-                print(f"{eve.host_id}: ERROR - Timeout waiting for qubit {i + 1} from {sender_id}. Aborting protocol.")
-                return
-            if eve_bases[i] == 'X':
-                qubit.H()
-            measured_bit = qubit.measure()
+                # Eve's measurement
+                if eve_bases[i] == 'X':
+                    qubit.H()
+                measured_bit = qubit.measure()
 
-            new_qubit = Qubit(eve)
-            if measured_bit == 1:
-                new_qubit.X()
-            if eve_bases[i] == 'X':
-                new_qubit.H()
-            eve.send_qubit(receiver_id, new_qubit, await_ack=True)
+                # Resend a new qubit based on measurement
+                new_qubit = Qubit(eve)
+                if measured_bit == 1:
+                    new_qubit.X()
+                if eve_bases[i] == 'X':
+                    new_qubit.H()
+                eve.send_qubit(receiver_id, new_qubit, await_ack=True)
 
-        alice_bases: list[str] = BB84._receive_classical(eve, sender_id, "BASES")
-        if alice_bases is None:
-            return None
+            # Forward all classical communication transparently
+            BB84._forward_classical_message(eve, sender_id, receiver_id)  # Alice -> Bob (bases)
+            BB84._forward_classical_message(eve, receiver_id, sender_id)  # Bob -> Alice (bases)
+            BB84._forward_classical_message(eve, sender_id, receiver_id)  # Alice -> Bob (sample info)
+            BB84._forward_classical_message(eve, receiver_id, sender_id)  # Bob -> Alice (error rate)
 
-        eve.send_classical(receiver_id, ("BASES", alice_bases), await_ack=True)
-
-        bob_bases: list[str] = BB84._receive_classical(eve, receiver_id, "BASES")
-        if bob_bases is None:
-            return None
-
-        eve.send_classical(sender_id, ("BASES", bob_bases), await_ack=True)
-
-        sample_info = BB84._receive_classical(eve, sender_id, "SAMPLE_INFO")
-        if bob_bases is None:
-            return None
-        sample_indices, sample_values = sample_info
-
-        eve.send_classical(receiver_id, ("SAMPLE_INFO", sample_indices, sample_values), await_ack=True)
-
-        error_rate = BB84._receive_classical(eve, receiver_id, "ERROR_RATE")
-        if error_rate is None:
-            return None
-
-        eve.send_classical(sender_id, ("ERROR_RATE", error_rate))
+        except BB84ProtocolError as e:
+            print(f"{eve.host_id}: Protocol failed during eavesdropping. Reason: {e}")
 
     # Cascade Protocol Logic
 
@@ -372,13 +366,9 @@ class BB84:
     # Helper Functions
 
     @staticmethod
-    def _receive_classical(host: Host, sender_id: str, expected_type: str | None = None) -> Any | None:
+    def _receive_classical(host: Host, sender_id: str, expected_type: str) -> Any:
         """
-        Safely receives and unpacks a classical message.
-
-        If an `expected_type` is provided and validated, the payload is returned.
-        If not provided, the entire message content is returned. The function
-        automatically unpacks single-item payloads from their tuple wrapper.
+        Safely receives and validates a specific classical message.
 
         Args:
             host: The QuNetSim host receiving the message.
@@ -386,28 +376,27 @@ class BB84:
             expected_type: The expected type string of the message.
 
         Returns:
-            The message payload. This can be a single value or a tuple of values.
-            Returns None on timeout or if the message is malformed or unexpected.
+            The message payload.
+
+        Raises:
+            BB84ProtocolError: If a timeout occurs, the message is malformed, or the message type is unexpected.
         """
         message = host.get_next_classical(sender_id, wait=BB84.NETWORK_TIMEOUT)
 
         if message is None:
-            print(f"{host.host_id}: ERROR - Timeout waiting for '{expected_type}' message from {sender_id}. Aborting "
-                  f"protocol.")
-            return None
+            raise BB84ProtocolError(f"{host.host_id}: ERROR - Timeout waiting for '{expected_type}' message from "
+                                    f"{sender_id}. Aborting protocol.")
 
         content = message.content
 
         if not isinstance(content, tuple) or not content:
-            print(f"{host.host_id}: ERROR - Received malformed message. Aborting protocol.")
-            return None
+            raise BB84ProtocolError(f"{host.host_id}: ERROR - Received malformed message. Aborting protocol.")
 
         if expected_type:
             message_type = content[0]
             if message_type != expected_type:
-                print(f"{host.host_id}: ERROR - Received unexpected message type '{message_type}' from {sender_id}. "
-                      f"Expected '{expected_type}'. Aborting protocol.")
-                return None
+                raise BB84ProtocolError(f"{host.host_id}: ERROR - Received unexpected message type '{message_type}' "
+                                        f"from {sender_id}. Expected '{expected_type}'. Aborting protocol.")
             payload = content[1:]
         else:
             payload = content
@@ -415,7 +404,7 @@ class BB84:
         return payload[0] if len(payload) == 1 else payload
 
     @staticmethod
-    def _forward_classical_message(host: Host, sender_id: str, receiver_id: str) -> bool:
+    def _forward_classical_message(host: Host, sender_id: str, receiver_id: str) -> None:
         """
         Intercepts a message from a source and forwards it to a destination.
 
@@ -425,16 +414,17 @@ class BB84:
             receiver_id: The intended destination of the message.
 
         Returns:
-            True if forwarding was successful, False on timeout.
+            None.
+
+        Raises:
+            BB84ProtocolError: If a timeout occurs while waiting for the message.
         """
         message = host.get_next_classical(sender_id, wait=BB84.NETWORK_TIMEOUT)
         if message is None:
-            print(f"{host.host_id}: ERROR - Timeout waiting for message from {sender_id} to forward. Aborting "
-                  f"protocol.")
-            return False
+            raise BB84ProtocolError(f"{host.host_id}: ERROR - Timeout waiting for message from {sender_id} to forward. "
+                                    f"Aborting protocol.")
 
         host.send_classical(receiver_id, message.content, await_ack=True)
-        return True
 
     # Utility Functions
 
