@@ -10,7 +10,6 @@ from typing import Any
 Logger.DISABLED = True
 
 
-# For Step 3: Basis Exchange
 @dataclass
 class BasesMessage:
     """Message containing a list of bases for sifting."""
@@ -36,30 +35,36 @@ class CascadeBlockMessage:
     block: list[int]
     parity: int
 
+
 @dataclass
 class CascadeMismatchMessage:
     """Message indicating if a parity mismatch was found in a block."""
     mismatch: bool
+
 
 @dataclass
 class CascadeSubParityMessage:
     """Message for the parity of a sub-block during binary search."""
     parity: int
 
+
 @dataclass
 class CascadeSubMismatchMessage:
     """Message indicating if a parity mismatch was found in a sub-block."""
     mismatch: bool
+
 
 @dataclass
 class KeyHashMessage:
     """Message containing the hash of a party's reconciled key."""
     key_hash: bytes
 
+
 @dataclass
 class KeyHashMatchMessage:
     """Message confirming whether the key hashes match."""
     is_match: bool
+
 
 class BB84ProtocolError(Exception):
     """
@@ -106,9 +111,7 @@ class BB84:
             alice.send_qubit(receiver_id, qubit, await_ack=eavesdropper_present)
 
         # Step 3: Compare bases with Bob to create the sifted key
-        message = BasesMessage(bases=alice_bases)
-        alice.send_classical(receiver_id, message, await_ack=True)
-
+        alice.send_classical(receiver_id, BasesMessage(bases=alice_bases), await_ack=True)
         bob_bases: list[str] = BB84._receive_classical(alice, receiver_id, BasesMessage)
         sifted_key_indices: list[int] = [i for i in range(BB84.KEY_LENGTH) if alice_bases[i] == bob_bases[i]]
         sifted_key: list[int] = [alice_bits[i] for i in sifted_key_indices]
@@ -119,10 +122,8 @@ class BB84:
         num_samples: int = ceil(len(sifted_key) * BB84.KEY_CHECK_RATIO)
         sample_indices: list[int] = sorted(random.sample(range(len(sifted_key)), num_samples))
         sample_values: list[int] = [sifted_key[i] for i in sample_indices]
-
-        message = SampleInfoMessage(indices=sample_indices, values=sample_values)
-        alice.send_classical(receiver_id, message, await_ack=False)
-
+        alice.send_classical(receiver_id, SampleInfoMessage(indices=sample_indices, values=sample_values),
+                             await_ack=False)
         estimated_qber: float = BB84._receive_classical(alice, receiver_id, QBERMessage)
         if estimated_qber > BB84.MAX_QBER:
             raise BB84ProtocolError()
@@ -164,10 +165,7 @@ class BB84:
 
         # Step 3: Compare bases with Alice to create the sifted key
         alice_bases: list[str] = BB84._receive_classical(bob, sender_id, BasesMessage)
-
-        message = BasesMessage(bases=bob_bases)
-        bob.send_classical(sender_id, message, await_ack=False)
-
+        bob.send_classical(sender_id, BasesMessage(bases=bob_bases), await_ack=False)
         sifted_key_indices: list[int] = [i for i in range(BB84.KEY_LENGTH) if alice_bases[i] == bob_bases[i]]
         sifted_key: list[int] = [bob_measured_bits[i] for i in sifted_key_indices]
         if not sifted_key:
@@ -177,10 +175,7 @@ class BB84:
         sample_indices, sample_values = BB84._receive_classical(bob, sender_id, SampleInfoMessage)
         mismatches: int = sum(1 for i, index in enumerate(sample_indices) if sifted_key[index] != sample_values[i])
         estimated_qber: float = (mismatches / len(sample_indices)) if sample_indices else 0.0
-
-        message = QBERMessage(qber=estimated_qber)
-        bob.send_classical(sender_id, message, await_ack=False)
-
+        bob.send_classical(sender_id, QBERMessage(qber=estimated_qber), await_ack=False)
         if estimated_qber > BB84.MAX_QBER:
             raise BB84ProtocolError()
 
@@ -250,19 +245,13 @@ class BB84:
 
             for block in blocks:
                 alice_parity: int = sum(working_key[i] for i in block) % 2
-
-                message = CascadeBlockMessage(block=block, parity=alice_parity)
-                alice.send_classical(bob_id, message, await_ack=True)
-
+                alice.send_classical(bob_id, CascadeBlockMessage(block=block, parity=alice_parity), await_ack=True)
                 mismatch: bool = BB84._receive_classical(alice, bob_id, CascadeMismatchMessage)
                 if mismatch:
                     BB84._alice_cascade_binary_search(alice, bob_id, working_key, block)
 
             key_hash: bytes = hashlib.sha256("".join(map(str, working_key)).encode('utf-8')).digest()
-
-            message = KeyHashMessage(key_hash=key_hash)
-            alice.send_classical(bob_id, message, await_ack=True)
-
+            alice.send_classical(bob_id, KeyHashMessage(key_hash=key_hash), await_ack=True)
             is_match: bool = BB84._receive_classical(alice, bob_id, KeyHashMatchMessage)
             if is_match:
                 return working_key
@@ -301,20 +290,14 @@ class BB84:
                 block, alice_parity = BB84._receive_classical(bob, alice_id, CascadeBlockMessage)
                 bob_parity: int = sum(working_key[i] for i in block) % 2
                 mismatch: bool = (bob_parity != alice_parity)
-
-                message = CascadeMismatchMessage(mismatch=mismatch)
-                bob.send_classical(alice_id, message, await_ack=True)
-
+                bob.send_classical(alice_id, CascadeMismatchMessage(mismatch=mismatch), await_ack=True)
                 if mismatch:
                     BB84._bob_cascade_binary_search(bob, alice_id, working_key, block)
 
             key_hash: bytes = BB84._receive_classical(bob, alice_id, KeyHashMessage)
             bob_key_hash: bytes = hashlib.sha256("".join(map(str, working_key)).encode('utf-8')).digest()
             is_match: bool = (bob_key_hash == key_hash)
-
-            message = KeyHashMatchMessage(is_match=is_match)
-            bob.send_classical(alice_id, message, await_ack=True)
-
+            bob.send_classical(alice_id, KeyHashMatchMessage(is_match=is_match), await_ack=True)
             if is_match:
                 return working_key
 
@@ -335,10 +318,7 @@ class BB84:
             mid: int = len(block) // 2
             left: list[int] = block[:mid]
             left_parity: int = sum(key[i] for i in left) % 2
-
-            message = CascadeSubParityMessage(parity=left_parity)
-            alice.send_classical(bob_id, message, await_ack=True)
-
+            alice.send_classical(bob_id, CascadeSubParityMessage(parity=left_parity), await_ack=True)
             mismatch_in_left: bool = BB84._receive_classical(alice, bob_id, CascadeSubMismatchMessage)
             if mismatch_in_left is None:
                 return
@@ -358,17 +338,12 @@ class BB84:
         while len(block) > 1:
             mid: int = len(block) // 2
             left: list[int] = block[:mid]
-
             alice_left_parity: int = BB84._receive_classical(bob, alice_id, CascadeSubParityMessage)
             if alice_left_parity is None:
                 return
-
             bob_left_parity: int = sum(key[i] for i in left) % 2
             mismatch_in_left: bool = (alice_left_parity != bob_left_parity)
-
-            message = CascadeSubMismatchMessage(mismatch=mismatch_in_left)
-            bob.send_classical(alice_id, message, await_ack=True)
-
+            bob.send_classical(alice_id, CascadeSubMismatchMessage(mismatch=mismatch_in_left), await_ack=True)
             block = left if mismatch_in_left else block[mid:]
 
         error_index: int = block[0]
