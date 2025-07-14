@@ -33,7 +33,7 @@ class MLKEM:
             The URL-safe base64 encoded shared secret.
 
         Raises:
-            KEMProtocolError: If the protocol fails.
+            MLKEMProtocolError: If the protocol fails.
         """
         public_key = MLKEM._receive_classical(host, receiver_id, "PUBLIC_KEY")
         ciphertext, shared_secret = MLKEM.KEM.encaps(public_key)
@@ -53,7 +53,7 @@ class MLKEM:
             The URL-safe base64 encoded shared secret.
 
         Raises:
-            KEMProtocolError: If the protocol fails.
+            MLKEMProtocolError: If the protocol fails.
         """
         public_key, secret_key = MLKEM.KEM.keygen()
         host.send_classical(sender_id, ("PUBLIC_KEY", public_key), await_ack=True)
