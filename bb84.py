@@ -13,15 +13,15 @@ class BB84:
     """
     Encapsulates the BB84 protocol logic, including an optional eavesdropper and QBER simulation.
     """
-    KEY_LENGTH: int = 256
     KEY_CHECK_RATIO: float = 0.5  # Amount of the sifted key to compare
+    KEY_LENGTH: int = 256
     MAX_QBER: float = 0.15  # Max tolerable QBER
     NETWORK_TIMEOUT: int = 20  # Wait time in seconds
 
     # Protocol Entry Points
 
     @staticmethod
-    def alice_protocol(alice: Host, receiver_id: str) -> bytes | None:
+    def alice_protocol(alice: Host, receiver_id: str, eavesdropper_present: bool = False) -> bytes | None:
         """
         Executes the full BB84 protocol from Alice's perspective.
 
@@ -36,6 +36,8 @@ class BB84:
         alice_bits: list[int] = [random.randint(0, 1) for _ in range(BB84.KEY_LENGTH)]
         alice_bases: list[str] = [random.choice(['Z', 'X']) for _ in range(BB84.KEY_LENGTH)]
 
+        await_ack: bool = True if eavesdropper_present else False
+
         # Step 2: Create and send qubits
         for i in range(BB84.KEY_LENGTH):
             qubit = Qubit(alice)
@@ -43,7 +45,7 @@ class BB84:
                 qubit.X()
             if alice_bases[i] == 'X':
                 qubit.H()
-            alice.send_qubit(receiver_id, qubit, await_ack=False)
+            alice.send_qubit(receiver_id, qubit, await_ack=await_ack)
 
         # Step 3: Compare bases with Bob to create the sifted key
         alice.send_classical(receiver_id, ("BASES", alice_bases), await_ack=True)
@@ -169,7 +171,7 @@ class BB84:
         eve_bases: list[str] = [random.choice(['Z', 'X']) for _ in range(BB84.KEY_LENGTH)]
 
         for i in range(BB84.KEY_LENGTH):
-            qubit = eve.get_qubit(sender_id)
+            qubit = eve.get_qubit(sender_id, wait=BB84.NETWORK_TIMEOUT)
             if qubit is None:
                 print(f"{eve.host_id}: ERROR - Timeout waiting for qubit {i + 1} from {sender_id}. Aborting protocol.")
                 return
@@ -182,16 +184,32 @@ class BB84:
                 new_qubit.X()
             if eve_bases[i] == 'X':
                 new_qubit.H()
-            eve.send_qubit(receiver_id, new_qubit, await_ack=False)
+            eve.send_qubit(receiver_id, new_qubit, await_ack=True)
 
-        if not BB84._forward_classical_message(eve, sender_id, receiver_id):
-            return
-        if not BB84._forward_classical_message(eve, receiver_id, sender_id):
-            return
-        if not BB84._forward_classical_message(eve, sender_id, receiver_id):
-            return
-        if not BB84._forward_classical_message(eve, receiver_id, sender_id):
-            return
+        alice_bases: list[str] = BB84._receive_classical(eve, sender_id, "BASES")
+        if alice_bases is None:
+            return None
+
+        eve.send_classical(receiver_id, ("BASES", alice_bases), await_ack=True)
+
+        bob_bases: list[str] = BB84._receive_classical(eve, receiver_id, "BASES")
+        if bob_bases is None:
+            return None
+
+        eve.send_classical(sender_id, ("BASES", bob_bases), await_ack=True)
+
+        sample_info = BB84._receive_classical(eve, sender_id, "SAMPLE_INFO")
+        if bob_bases is None:
+            return None
+        sample_indices, sample_values = sample_info
+
+        eve.send_classical(receiver_id, ("SAMPLE_INFO", sample_indices, sample_values), await_ack=True)
+
+        error_rate = BB84._receive_classical(eve, receiver_id, "ERROR_RATE")
+        if error_rate is None:
+            return None
+
+        eve.send_classical(sender_id, ("ERROR_RATE", error_rate))
 
     # Cascade Protocol Logic
 
@@ -462,7 +480,6 @@ class BB84:
         """
         if estimated_qber <= 0:
             return 16  # Fallback for a zero-error scenario
-        # 0.73 is an efficiency factor commonly used for the Cascade protocol.
         return max(4, ceil(0.73 / estimated_qber))
 
 
@@ -481,8 +498,6 @@ def run_bb84(simulated_qber: float = 0.0, eavesdropper_present: bool = False) ->
     host_bob = Host('Bob')
     hosts = [host_alice, host_bob]
 
-    threads = []
-
     if eavesdropper_present:
         host_eve = Host('Eve')
         hosts.append(host_eve)
@@ -491,21 +506,24 @@ def run_bb84(simulated_qber: float = 0.0, eavesdropper_present: bool = False) ->
         host_eve.add_connection(host_alice.host_id)
         host_eve.add_connection(host_bob.host_id)
         host_bob.add_connection(host_eve.host_id)
-
-        threads.append(host_alice.run_protocol(BB84.alice_protocol, (host_eve.host_id,)))
-        threads.append(host_eve.run_protocol(BB84.eve_protocol, (host_alice.host_id, host_bob.host_id)))
-        threads.append(host_bob.run_protocol(BB84.bob_protocol, (host_eve.host_id, 0.0)))
     else:
         host_alice.add_connection(host_bob.host_id)
         host_bob.add_connection(host_alice.host_id)
-
-        threads.append(host_alice.run_protocol(BB84.alice_protocol, (host_bob.host_id,)))
-        threads.append(host_bob.run_protocol(BB84.bob_protocol, (host_alice.host_id, simulated_qber)))
 
     network.add_hosts(hosts)
 
     for host in hosts:
         host.start()
+
+    threads = []
+
+    if eavesdropper_present:
+        threads.append(host_alice.run_protocol(BB84.alice_protocol, (host_eve.host_id, eavesdropper_present)))
+        threads.append(host_eve.run_protocol(BB84.eve_protocol, (host_alice.host_id, host_bob.host_id)))
+        threads.append(host_bob.run_protocol(BB84.bob_protocol, (host_eve.host_id, 0.0)))
+    else:
+        threads.append(host_alice.run_protocol(BB84.alice_protocol, (host_bob.host_id, eavesdropper_present)))
+        threads.append(host_bob.run_protocol(BB84.bob_protocol, (host_alice.host_id, simulated_qber)))
 
     for thread in threads:
         thread.join()
@@ -518,6 +536,11 @@ def main() -> None:
     Runs a series of predefined scenarios for the BB84 simulation.
     """
     scenarios = [
+        {
+            "description": "With an eavesdropper (should fail)",
+            "simulated_qber": 0.0,
+            "eavesdropper_present": True
+        },
         {
             "description": "No noise, no eavesdropper (should succeed)",
             "simulated_qber": 0.00,
@@ -537,11 +560,6 @@ def main() -> None:
             "description": "20% channel noise (should fail)",
             "simulated_qber": 0.20,
             "eavesdropper_present": False
-        },
-        {
-            "description": "With an eavesdropper (should fail)",
-            "simulated_qber": 0.0,
-            "eavesdropper_present": True
         },
     ]
 
