@@ -411,9 +411,7 @@ class BB84:
         else:
             payload = content
 
-        if len(payload) == 1:
-            return payload[0]
-        return payload
+        return payload[0] if len(payload) == 1 else payload
 
     @staticmethod
     def _forward_classical_message(host: Host, sender_id: str, receiver_id: str) -> bool:
