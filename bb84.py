@@ -28,6 +28,7 @@ class BB84:
         Args:
             alice: The Host object for Alice.
             receiver_id: The network ID of the intended receiver (Bob).
+            eavesdropper_present: Waits for qubit receipt acknowledgements if True
 
         Returns:
             The final, secure key as a bytes object, or None if the protocol fails.
