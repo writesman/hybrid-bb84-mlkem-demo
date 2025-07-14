@@ -9,6 +9,13 @@ from typing import Any
 Logger.DISABLED = True
 
 
+class BB84ProtocolError(Exception):
+    """
+    Custom exception for errors during the KEM protocol.
+    """
+    pass
+
+
 class BB84:
     """
     Encapsulates the BB84 protocol logic, including an optional eavesdropper and QBER simulation.
@@ -37,8 +44,6 @@ class BB84:
         alice_bits: list[int] = [random.randint(0, 1) for _ in range(BB84.KEY_LENGTH)]
         alice_bases: list[str] = [random.choice(['Z', 'X']) for _ in range(BB84.KEY_LENGTH)]
 
-        await_ack: bool = True if eavesdropper_present else False
-
         # Step 2: Create and send qubits
         for i in range(BB84.KEY_LENGTH):
             qubit = Qubit(alice)
@@ -46,47 +51,29 @@ class BB84:
                 qubit.X()
             if alice_bases[i] == 'X':
                 qubit.H()
-            alice.send_qubit(receiver_id, qubit, await_ack=await_ack)
+            alice.send_qubit(receiver_id, qubit, await_ack=eavesdropper_present)
 
         # Step 3: Compare bases with Bob to create the sifted key
         alice.send_classical(receiver_id, ("BASES", alice_bases), await_ack=True)
-
         bob_bases: list[str] = BB84._receive_classical(alice, receiver_id, "BASES")
-        if bob_bases is None:
-            return None
-
         sifted_key_indices: list[int] = [i for i in range(BB84.KEY_LENGTH) if alice_bases[i] == bob_bases[i]]
         sifted_key: list[int] = [alice_bits[i] for i in sifted_key_indices]
-
         if not sifted_key:
-            print(f"{alice.host_id}: ERROR - No matching bases found. Aborting protocol.")
-            return None
+            raise BB84ProtocolError
 
         # Step 4: Perform error checking by comparing a sample of the key
         num_samples: int = ceil(len(sifted_key) * BB84.KEY_CHECK_RATIO)
-        if num_samples == 0:
-            print(f"{alice.host_id}: ERROR - Sifted key is too short for error checking. Aborting protocol.")
-            return None
-
         sample_indices: list[int] = sorted(random.sample(range(len(sifted_key)), num_samples))
         sample_values: list[int] = [sifted_key[i] for i in sample_indices]
         alice.send_classical(receiver_id, ("SAMPLE_INFO", sample_indices, sample_values))
 
         estimated_qber: float = BB84._receive_classical(alice, receiver_id, "ERROR_RATE")
-        if estimated_qber is None:
-            return None
-
         if estimated_qber > BB84.MAX_QBER:
-            print(f"{alice.host_id}: ERROR - Estimated QBER ({estimated_qber * 100:.2f}%) exceeds maximum of "
-                  f"{BB84.MAX_QBER * 100}%. Aborting protocol.")
-            return None
+            raise BB84ProtocolError
 
         # Step 5: Perform error reconciliation (Cascade)
         noisy_key: list[int] = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
         reconciled_key: list[int] | None = BB84._alice_cascade_protocol(alice, receiver_id, noisy_key, estimated_qber)
-
-        if reconciled_key is None:
-            return None
 
         # Step 6: Perform privacy amplification and return the final key
         return BB84._privacy_amplification(reconciled_key)
