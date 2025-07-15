@@ -6,6 +6,18 @@ from qunetsim.components import Host, Network
 from qunetsim.objects import Qubit
 from math import ceil
 from typing import Any
+from enum import Enum
+
+
+@dataclass
+class CascadePassParitiesMessage:
+    """Message containing all parities for all blocks in a pass."""
+    parities: list[int]
+
+@dataclass
+class CascadeMismatchIndicesMessage:
+    """Message containing the indices of blocks with parity mismatches."""
+    mismatch_indices: list[int]
 
 
 @dataclass
@@ -25,19 +37,6 @@ class SampleInfoMessage:
 class QBERMessage:
     """Message containing the estimated Quantum Bit Error Rate (QBER)."""
     qber: float
-
-
-@dataclass
-class CascadeBlockMessage:
-    """Message for a block of key indices and its corresponding parity."""
-    block: list[int]
-    parity: int
-
-
-@dataclass
-class CascadeMismatchMessage:
-    """Message indicating if a parity mismatch was found in a block."""
-    mismatch: bool
 
 
 @dataclass
@@ -114,7 +113,7 @@ class BB84:
 
         # Step 5: Perform error reconciliation (Cascade)
         noisy_key: list[int] = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
-        reconciled_key: list[int] | None = BB84._alice_cascade_protocol(alice, receiver_id, noisy_key, estimated_qber)
+        reconciled_key: list[int] = BB84._alice_cascade_protocol(alice, receiver_id, noisy_key, estimated_qber)
 
         alice.send_classical(receiver_id, reconciled_key, await_ack=False)
 
@@ -159,7 +158,7 @@ class BB84:
 
         # Step 5: Perform error reconciliation (Cascade)
         noisy_key: list[int] = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
-        reconciled_key: list[int] | None = BB84._bob_cascade_protocol(bob, sender_id, noisy_key, estimated_qber)
+        reconciled_key: list[int] = BB84._bob_cascade_protocol(bob, sender_id, noisy_key, estimated_qber)
 
         alice = bob.get_next_classical(sender_id, wait=BB84.NETWORK_TIMEOUT).content
 
@@ -207,104 +206,104 @@ class BB84:
     # Cascade Protocol Logic
 
     @staticmethod
-    def _alice_cascade_protocol(alice: Host, bob_id: str, noisy_key: list[int], estimated_qber: float, seed: int = 42,
-                                max_passes: int = 10) -> list[int] | None:
-        working_key: list[int] = noisy_key.copy()
-        key_length: int = len(working_key)
-        initial_block_size: int = BB84._compute_initial_block_size(estimated_qber)
+    def _alice_cascade_protocol(alice: Host, bob_id: str, key: list[int], estimated_qber: float,
+                                seed: int = 42, max_passes: int = 4) -> list[int]:
+        """Alice's side of the batched Cascade protocol."""
+        working_key = key.copy()
+        key_length = len(working_key)
 
         for pass_num in range(max_passes):
-            block_size: int = initial_block_size * (2 ** pass_num)
-            indices: list[int] = list(range(key_length))
+            block_size = BB84._compute_initial_block_size(estimated_qber) * (2 ** pass_num)
+            if block_size > key_length: block_size = key_length
+            if block_size < 2: block_size = 2
+
+            indices = list(range(key_length))
             random.seed(seed + pass_num)
             random.shuffle(indices)
-            blocks: list[list[int]] = [indices[i:i + block_size] for i in range(0, key_length, block_size)]
+            blocks = [indices[i:i + block_size] for i in range(0, key_length, block_size) if
+                      i + block_size <= key_length]
+            if not blocks: continue
 
-            for block in blocks:
-                alice_parity: int = sum(working_key[i] for i in block) % 2
-                alice.send_classical(bob_id, CascadeBlockMessage(block=block, parity=alice_parity), await_ack=True)
-                mismatch: bool = BB84._receive_classical(alice, bob_id, CascadeMismatchMessage).mismatch
-                if mismatch:
-                    BB84._alice_cascade_binary_search(alice, bob_id, working_key, block)
+            my_parities = [sum(working_key[i] for i in block) % 2 for block in blocks]
+            alice.send_classical(bob_id, CascadePassParitiesMessage(parities=my_parities))
 
-            key_hash: bytes = hashlib.sha256("".join(map(str, working_key)).encode('utf-8')).digest()
-            alice.send_classical(bob_id, KeyHashMessage(key_hash=key_hash), await_ack=True)
-            is_match: bool = BB84._receive_classical(alice, bob_id, KeyHashMatchMessage).is_match
+            mismatch_msg = BB84._receive_classical(alice, bob_id, CascadeMismatchIndicesMessage)
+            mismatched_blocks = [blocks[i] for i in mismatch_msg.mismatch_indices]
+
+            # Binary search logic is now inlined here
+            for block in mismatched_blocks:
+                search_block = block[:]  # Use a copy for the search
+                while len(search_block) > 1:
+                    mid = len(search_block) // 2
+                    left, right = search_block[:mid], search_block[mid:]
+                    left_parity = sum(working_key[i] for i in left) % 2
+                    alice.send_classical(bob_id, CascadeSubParityMessage(parity=left_parity))
+                    sub_mismatch_msg = BB84._receive_classical(alice, bob_id, CascadeSubMismatchMessage)
+                    search_block = left if sub_mismatch_msg.mismatch else right
+
+            my_hash = hashlib.sha256("".join(map(str, working_key)).encode()).digest()
+            alice.send_classical(bob_id, KeyHashMessage(key_hash=my_hash))
+            match_msg = BB84._receive_classical(alice, bob_id, KeyHashMatchMessage)
+            if match_msg.is_match:
+                return working_key
+
+        raise BB84ProtocolError("Cascade failed to reconcile keys after all passes.")
+
+    @staticmethod
+    def _bob_cascade_protocol(bob: Host, alice_id: str, key: list[int], estimated_qber: float,
+                              seed: int = 42, max_passes: int = 4) -> list[int]:
+        """Bob's side of the batched Cascade protocol."""
+        working_key = key.copy()
+        key_length = len(working_key)
+
+        for pass_num in range(max_passes):
+            block_size = BB84._compute_initial_block_size(estimated_qber) * (2 ** pass_num)
+            if block_size > key_length: block_size = key_length
+            if block_size < 2: block_size = 2
+
+            indices = list(range(key_length))
+            random.seed(seed + pass_num)
+            random.shuffle(indices)
+            blocks = [indices[i:i + block_size] for i in range(0, key_length, block_size) if
+                      i + block_size <= key_length]
+            if not blocks: continue
+
+            parities_msg = BB84._receive_classical(bob, alice_id, CascadePassParitiesMessage)
+            their_parities = parities_msg.parities
+
+            mismatch_indices = []
+            for i, block in enumerate(blocks):
+                my_parity = sum(working_key[i] for i in block) % 2
+                if my_parity != their_parities[i]:
+                    mismatch_indices.append(i)
+
+            bob.send_classical(alice_id, CascadeMismatchIndicesMessage(mismatch_indices=mismatch_indices))
+            mismatched_blocks = [blocks[i] for i in mismatch_indices]
+
+            # Binary search logic is now inlined here
+            for block in mismatched_blocks:
+                search_block = block[:]  # Use a copy for the search
+                while len(search_block) > 1:
+                    mid = len(search_block) // 2
+                    left, right = search_block[:mid], search_block[mid:]
+                    sub_parity_msg = BB84._receive_classical(bob, alice_id, CascadeSubParityMessage)
+                    my_left_parity = sum(working_key[i] for i in left) % 2
+                    is_mismatch = (my_left_parity != sub_parity_msg.parity)
+                    bob.send_classical(alice_id, CascadeSubMismatchMessage(mismatch=is_mismatch))
+                    search_block = left if is_mismatch else right
+
+                if search_block:
+                    error_index = search_block[0]
+                    working_key[error_index] ^= 1
+
+            their_hash_msg = BB84._receive_classical(bob, alice_id, KeyHashMessage)
+            my_hash = hashlib.sha256("".join(map(str, working_key)).encode()).digest()
+            is_match = (my_hash == their_hash_msg.key_hash)
+            bob.send_classical(alice_id, KeyHashMatchMessage(is_match=is_match))
             if is_match:
                 return working_key
 
-        raise BB84ProtocolError()
-
-    @staticmethod
-    def _bob_cascade_protocol(bob: Host, alice_id: str, noisy_key: list[int], estimated_qber: float, seed: int = 42,
-                              max_passes: int = 10) -> list[int] | None:
-        working_key: list[int] = noisy_key.copy()
-        key_length: int = len(working_key)
-        initial_block_size: int = BB84._compute_initial_block_size(estimated_qber)
-
-        for pass_num in range(max_passes):
-            block_size: int = initial_block_size * (2 ** pass_num)
-            indices: list[int] = list(range(key_length))
-            random.seed(seed + pass_num)
-            random.shuffle(indices)
-            num_blocks: int = ceil(key_length / block_size)
-
-            for _ in range(num_blocks):
-                cascade_block_message: CascadeBlockMessage = BB84._receive_classical(bob, alice_id, CascadeBlockMessage)
-                block = cascade_block_message.block
-                alice_parity = cascade_block_message.parity
-
-                bob_parity: int = sum(working_key[i] for i in block) % 2
-                mismatch: bool = (bob_parity != alice_parity)
-                bob.send_classical(alice_id, CascadeMismatchMessage(mismatch=mismatch), await_ack=True)
-                if mismatch:
-                    BB84._bob_cascade_binary_search(bob, alice_id, working_key, block)
-
-            key_hash: bytes = BB84._receive_classical(bob, alice_id, KeyHashMessage).key_hash
-            bob_key_hash: bytes = hashlib.sha256("".join(map(str, working_key)).encode('utf-8')).digest()
-            is_match: bool = (bob_key_hash == key_hash)
-            bob.send_classical(alice_id, KeyHashMatchMessage(is_match=is_match), await_ack=True)
-            if is_match:
-                return working_key
-
-        raise BB84ProtocolError()
-
-    @staticmethod
-    def _alice_cascade_binary_search(alice: Host, bob_id: str, key: list[int], block: list[int]) -> None:
-        while len(block) > 1:
-            mid: int = len(block) // 2
-            left: list[int] = block[:mid]
-            left_parity: int = sum(key[i] for i in left) % 2
-            alice.send_classical(bob_id, CascadeSubParityMessage(parity=left_parity), await_ack=True)
-            mismatch_in_left: bool = BB84._receive_classical(alice, bob_id, CascadeSubMismatchMessage).mismatch
-            if mismatch_in_left is None:
-                return
-            block = left if mismatch_in_left else block[mid:]
-
-    @staticmethod
-    def _bob_cascade_binary_search(bob: Host, alice_id: str, key: list[int], block: list[int]) -> None:
-        """
-        Executes Bob's part of the binary search to find and correct an error in a block.
-
-        Args:
-            bob: The Host object for Bob.
-            alice_id: The network ID of Alice.
-            key: Bob's working key (will be corrected in place).
-            block: The list of indices in the key that has a parity mismatch.
-        """
-        while len(block) > 1:
-            mid: int = len(block) // 2
-            left: list[int] = block[:mid]
-            alice_left_parity: int = BB84._receive_classical(bob, alice_id, CascadeSubParityMessage).parity
-            if alice_left_parity is None:
-                return
-            bob_left_parity: int = sum(key[i] for i in left) % 2
-            mismatch_in_left: bool = (alice_left_parity != bob_left_parity)
-            bob.send_classical(alice_id, CascadeSubMismatchMessage(mismatch=mismatch_in_left), await_ack=True)
-            block = left if mismatch_in_left else block[mid:]
-
-        error_index: int = block[0]
-        key[error_index] ^= 1
+        raise BB84ProtocolError("Cascade failed to reconcile keys after all passes.")
 
     # Helper Functions
 
