@@ -6,7 +6,6 @@ from qunetsim.components import Host, Network
 from qunetsim.objects import Qubit
 from math import ceil
 from typing import Any
-from enum import Enum
 
 
 @dataclass
@@ -113,7 +112,7 @@ class BB84:
 
         # Step 5: Perform error reconciliation (Cascade)
         noisy_key: list[int] = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
-        reconciled_key: list[int] = BB84._alice_cascade_protocol(alice, receiver_id, noisy_key, estimated_qber)
+        reconciled_key: list[int] = BB84._cascade_protocol(alice, receiver_id, True, noisy_key, estimated_qber)
 
         alice.send_classical(receiver_id, reconciled_key, await_ack=False)
 
@@ -158,7 +157,7 @@ class BB84:
 
         # Step 5: Perform error reconciliation (Cascade)
         noisy_key: list[int] = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
-        reconciled_key: list[int] = BB84._bob_cascade_protocol(bob, sender_id, noisy_key, estimated_qber)
+        reconciled_key: list[int] = BB84._cascade_protocol(bob, sender_id, False, noisy_key, estimated_qber)
 
         alice = bob.get_next_classical(sender_id, wait=BB84.NETWORK_TIMEOUT).content
 
@@ -206,103 +205,94 @@ class BB84:
     # Cascade Protocol Logic
 
     @staticmethod
-    def _alice_cascade_protocol(alice: Host, bob_id: str, key: list[int], estimated_qber: float,
-                                seed: int = 42, max_passes: int = 4) -> list[int]:
-        """Alice's side of the batched Cascade protocol."""
+    def _cascade_protocol(host: Host, partner_id: str, is_alice: bool, key: list[int], estimated_qber: float,
+                          seed: int = 42, max_passes: int = 4) -> list[int]:
+        """
+        Performs the Cascade error reconciliation protocol.
+
+        This is a unified function for both Alice (the initiator) and Bob (the responder).
+        The 'is_alice' flag determines the role and order of communication.
+        """
         working_key = key.copy()
         key_length = len(working_key)
 
         for pass_num in range(max_passes):
+            # --- 1. Block Creation and Shuffling (Identical for both parties) ---
             block_size = BB84._compute_initial_block_size(estimated_qber) * (2 ** pass_num)
-            if block_size > key_length: block_size = key_length
-            if block_size < 2: block_size = 2
+            if block_size > key_length:
+                block_size = key_length
+            if block_size < 2:  # A block must have at least 2 bits to find an error
+                block_size = 2
 
             indices = list(range(key_length))
-            random.seed(seed + pass_num)
+            random.seed(seed + pass_num)  # Use a shared seed to get the same permutation
             random.shuffle(indices)
+
+            # Create blocks, dropping any remainder
             blocks = [indices[i:i + block_size] for i in range(0, key_length, block_size) if
                       i + block_size <= key_length]
-            if not blocks: continue
+            if not blocks:
+                continue
 
             my_parities = [sum(working_key[i] for i in block) % 2 for block in blocks]
-            alice.send_classical(bob_id, CascadePassParitiesMessage(parities=my_parities))
 
-            mismatch_msg = BB84._receive_classical(alice, bob_id, CascadeMismatchIndicesMessage)
-            mismatched_blocks = [blocks[i] for i in mismatch_msg.mismatch_indices]
+            # --- 2. Parity Exchange to Find Mismatched Blocks ---
+            if is_alice:
+                # Alice sends her parities and receives back the indices of mismatched blocks.
+                host.send_classical(partner_id, CascadePassParitiesMessage(parities=my_parities))
+                mismatch_indices = BB84._receive_classical(host, partner_id,
+                                                           CascadeMismatchIndicesMessage).mismatch_indices
+            else:
+                # Bob receives Alice's parities, compares them to his own, and sends back mismatch indices.
+                their_parities = BB84._receive_classical(host, partner_id, CascadePassParitiesMessage).parities
+                mismatch_indices = [i for i, block in enumerate(blocks) if my_parities[i] != their_parities[i]]
+                host.send_classical(partner_id, CascadeMismatchIndicesMessage(mismatch_indices=mismatch_indices))
 
-            # Binary search logic is now inlined here
-            for block in mismatched_blocks:
-                search_block = block[:]  # Use a copy for the search
-                while len(search_block) > 1:
-                    mid = len(search_block) // 2
-                    left, right = search_block[:mid], search_block[mid:]
-                    left_parity = sum(working_key[i] for i in left) % 2
-                    alice.send_classical(bob_id, CascadeSubParityMessage(parity=left_parity))
-                    sub_mismatch_msg = BB84._receive_classical(alice, bob_id, CascadeSubMismatchMessage)
-                    search_block = left if sub_mismatch_msg.mismatch else right
-
-            my_hash = hashlib.sha256("".join(map(str, working_key)).encode()).digest()
-            alice.send_classical(bob_id, KeyHashMessage(key_hash=my_hash))
-            match_msg = BB84._receive_classical(alice, bob_id, KeyHashMatchMessage)
-            if match_msg.is_match:
-                return working_key
-
-        raise BB84ProtocolError("Cascade failed to reconcile keys after all passes.")
-
-    @staticmethod
-    def _bob_cascade_protocol(bob: Host, alice_id: str, key: list[int], estimated_qber: float,
-                              seed: int = 42, max_passes: int = 4) -> list[int]:
-        """Bob's side of the batched Cascade protocol."""
-        working_key = key.copy()
-        key_length = len(working_key)
-
-        for pass_num in range(max_passes):
-            block_size = BB84._compute_initial_block_size(estimated_qber) * (2 ** pass_num)
-            if block_size > key_length: block_size = key_length
-            if block_size < 2: block_size = 2
-
-            indices = list(range(key_length))
-            random.seed(seed + pass_num)
-            random.shuffle(indices)
-            blocks = [indices[i:i + block_size] for i in range(0, key_length, block_size) if
-                      i + block_size <= key_length]
-            if not blocks: continue
-
-            parities_msg = BB84._receive_classical(bob, alice_id, CascadePassParitiesMessage)
-            their_parities = parities_msg.parities
-
-            mismatch_indices = []
-            for i, block in enumerate(blocks):
-                my_parity = sum(working_key[i] for i in block) % 2
-                if my_parity != their_parities[i]:
-                    mismatch_indices.append(i)
-
-            bob.send_classical(alice_id, CascadeMismatchIndicesMessage(mismatch_indices=mismatch_indices))
             mismatched_blocks = [blocks[i] for i in mismatch_indices]
 
-            # Binary search logic is now inlined here
+            # --- 3. Binary Search to Find and Correct Errors ---
             for block in mismatched_blocks:
-                search_block = block[:]  # Use a copy for the search
+                search_block = block.copy()
                 while len(search_block) > 1:
                     mid = len(search_block) // 2
                     left, right = search_block[:mid], search_block[mid:]
-                    sub_parity_msg = BB84._receive_classical(bob, alice_id, CascadeSubParityMessage)
                     my_left_parity = sum(working_key[i] for i in left) % 2
-                    is_mismatch = (my_left_parity != sub_parity_msg.parity)
-                    bob.send_classical(alice_id, CascadeSubMismatchMessage(mismatch=is_mismatch))
+
+                    if is_alice:
+                        # Alice sends the parity of her left sub-block and learns if it matched Bob's.
+                        host.send_classical(partner_id, CascadeSubParityMessage(parity=my_left_parity))
+                        is_mismatch = BB84._receive_classical(host, partner_id, CascadeSubMismatchMessage).mismatch
+                    else:
+                        # Bob receives Alice's sub-parity, compares it, and reports if there's a mismatch.
+                        alice_left_parity = BB84._receive_classical(host, partner_id, CascadeSubParityMessage).parity
+                        is_mismatch = (my_left_parity != alice_left_parity)
+                        host.send_classical(partner_id, CascadeSubMismatchMessage(mismatch=is_mismatch))
+
                     search_block = left if is_mismatch else right
 
-                if search_block:
+                # Bob is the one to correct the bit, as Alice's key is the reference.
+                if not is_alice and search_block:
                     error_index = search_block[0]
-                    working_key[error_index] ^= 1
+                    working_key[error_index] ^= 1  # Flip the bit
 
-            their_hash_msg = BB84._receive_classical(bob, alice_id, KeyHashMessage)
+            # --- 4. Final Hash Check to Confirm Reconciliation ---
             my_hash = hashlib.sha256("".join(map(str, working_key)).encode()).digest()
-            is_match = (my_hash == their_hash_msg.key_hash)
-            bob.send_classical(alice_id, KeyHashMatchMessage(is_match=is_match))
+
+            if is_alice:
+                # Alice sends her hash and waits for confirmation of a match.
+                host.send_classical(partner_id, KeyHashMessage(key_hash=my_hash))
+                is_match = BB84._receive_classical(host, partner_id, KeyHashMatchMessage).is_match
+            else:
+                # Bob receives Alice's hash, compares it to his, and reports the result.
+                their_hash = BB84._receive_classical(host, partner_id, KeyHashMessage).key_hash
+                is_match = (my_hash == their_hash)
+                host.send_classical(partner_id, KeyHashMatchMessage(is_match=is_match))
+
             if is_match:
+                # Keys are reconciled, exit the loop.
                 return working_key
 
+        # If loops complete without a match, the protocol has failed.
         raise BB84ProtocolError("Cascade failed to reconcile keys after all passes.")
 
     # Helper Functions
