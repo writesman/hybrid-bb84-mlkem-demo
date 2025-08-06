@@ -1,5 +1,5 @@
 from bb84 import BB84
-from mlkem import MLKEM
+from ml_kem import MLKEM
 from qunetsim.components import Host, Network
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
