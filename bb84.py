@@ -72,7 +72,7 @@ class BB84ProtocolError(Exception):
 
 class BB84:
     KEY_CHECK_RATIO: float = 0.5  # Amount of the sifted key to compare
-    KEY_LENGTH: int = 64
+    KEY_LENGTH: int = 256
     MAX_QBER: float = 0.15  # Max tolerable QBER
     NETWORK_TIMEOUT: int = 20  # Wait time in seconds
 
@@ -114,8 +114,6 @@ class BB84:
         # Step 5: Perform error reconciliation (Cascade)
         noisy_key: list[int] = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
         reconciled_key: list[int] = BB84._cascade_protocol(alice, receiver_id, True, noisy_key, estimated_qber)
-
-        alice.send_classical(receiver_id, reconciled_key, await_ack=False)
 
         # Step 6: Perform privacy amplification and return the final key
         return BB84._privacy_amplification(reconciled_key)
@@ -160,13 +158,6 @@ class BB84:
         noisy_key: list[int] = [sifted_key[i] for i in range(len(sifted_key)) if i not in sample_indices]
         reconciled_key: list[int] = BB84._cascade_protocol(bob, sender_id, False, noisy_key, estimated_qber)
 
-        alice = bob.get_next_classical(sender_id, wait=BB84.NETWORK_TIMEOUT).content
-
-        if alice == reconciled_key:
-            print("Sucess")
-        else:
-            print("Fails")
-
         # Step 6: Perform privacy amplification and return the final key
         return BB84._privacy_amplification(reconciled_key)
 
@@ -189,19 +180,10 @@ class BB84:
                 new_qubit.H()
             eve.send_qubit(receiver_id, new_qubit, await_ack=True)
 
-        # TODO: implement forward_classical
-
-        # alice_bases: list[str] = BB84._receive_classical(eve, sender_id, "BASES")
-        # eve.send_classical(receiver_id, ("BASES", alice_bases), await_ack=True)
-        #
-        # bob_bases: list[str] = BB84._receive_classical(eve, receiver_id, "BASES")
-        # eve.send_classical(sender_id, ("BASES", bob_bases), await_ack=True)
-        #
-        # sample_indices, sample_values = BB84._receive_classical(eve, sender_id, "SAMPLE_INFO")
-        # eve.send_classical(receiver_id, ("SAMPLE_INFO", sample_indices, sample_values), await_ack=True)
-        #
-        # error_rate = BB84._receive_classical(eve, receiver_id, "ERROR_RATE")
-        # eve.send_classical(sender_id, ("ERROR_RATE", error_rate))
+        BB84._forward_classical_message(eve, sender_id, receiver_id)
+        BB84._forward_classical_message(eve, receiver_id, sender_id)
+        BB84._forward_classical_message(eve, sender_id, receiver_id)
+        BB84._forward_classical_message(eve, receiver_id, sender_id)
 
     # Cascade Protocol Logic
 
@@ -289,7 +271,13 @@ class BB84:
 
     @staticmethod
     def _forward_classical_message(host: Host, sender_id: str, receiver_id: str) -> bool:
-        pass
+        message_object = host.get_next_classical(sender_id, wait=BB84.NETWORK_TIMEOUT)
+        if message_object is None:
+            return False
+        message = message_object.content
+
+        host.send_classical(receiver_id, message)
+        return True
 
     # Utility Functions
 
@@ -360,6 +348,11 @@ def main() -> None:
             "eavesdropper_present": False
         },
         {
+            "description": "With an eavesdropper (should fail)",
+            "simulated_qber": 0.0,
+            "eavesdropper_present": True
+        },
+        {
             "description": "5% channel noise (should succeed)",
             "simulated_qber": 0.05,
             "eavesdropper_present": False
@@ -374,11 +367,7 @@ def main() -> None:
             "simulated_qber": 0.20,
             "eavesdropper_present": False
         },
-        # {
-        #     "description": "With an eavesdropper (should fail)",
-        #     "simulated_qber": 0.0,
-        #     "eavesdropper_present": True
-        # },
+
     ]
 
     for i, scenario in enumerate(scenarios):
