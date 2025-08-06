@@ -106,7 +106,7 @@ class BB84:
         sample_indices: list[int] = sorted(random.sample(range(len(sifted_key)), num_samples))
         sample_values: list[int] = [sifted_key[i] for i in sample_indices]
         alice.send_classical(receiver_id, SampleInfoMessage(indices=sample_indices, values=sample_values),
-                             await_ack=False)
+                             await_ack=True)
         estimated_qber: float = BB84._receive_classical(alice, receiver_id, QBERMessage).qber
         if estimated_qber > BB84.MAX_QBER:
             raise BB84ProtocolError()
@@ -137,7 +137,7 @@ class BB84:
 
         # Step 3: Compare bases with Alice to create the sifted key
         alice_bases: list[str] = BB84._receive_classical(bob, sender_id, BasesMessage).bases
-        bob.send_classical(sender_id, BasesMessage(bases=bob_bases), await_ack=False)
+        bob.send_classical(sender_id, BasesMessage(bases=bob_bases), await_ack=True)
         sifted_key_indices: list[int] = [i for i in range(BB84.KEY_LENGTH) if alice_bases[i] == bob_bases[i]]
         sifted_key: list[int] = [bob_measured_bits[i] for i in sifted_key_indices]
         if not sifted_key:
@@ -150,7 +150,7 @@ class BB84:
 
         mismatches: int = sum(1 for i, index in enumerate(sample_indices) if sifted_key[index] != sample_values[i])
         estimated_qber: float = (mismatches / len(sample_indices)) if sample_indices else 0.0
-        bob.send_classical(sender_id, QBERMessage(qber=estimated_qber), await_ack=False)
+        bob.send_classical(sender_id, QBERMessage(qber=estimated_qber), await_ack=True)
         if estimated_qber > BB84.MAX_QBER:
             raise BB84ProtocolError()
 
