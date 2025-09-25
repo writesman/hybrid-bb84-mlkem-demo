@@ -1,5 +1,5 @@
 from qunetsim.components import Host, Network
-from bb84_mlkem_fusion_demo import classical_protocol, middleware_protocol, quantum_protocol
+from protocols.hybrid import classical_protocol, middleware_protocol, quantum_protocol
 
 NETWORK_TIMEOUT = 20
 
