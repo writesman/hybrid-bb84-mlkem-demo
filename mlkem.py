@@ -1,7 +1,7 @@
-from quantcrypt.kem import MLKEM_1024
-from qunetsim.components import Host
 import base64
 from typing import Any
+from quantcrypt.kem import MLKEM_1024
+from qunetsim.components import Host
 
 
 class MLKEMProtocolError(Exception):
