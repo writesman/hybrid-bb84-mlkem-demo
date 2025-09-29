@@ -1,4 +1,4 @@
-# hybrid-bb84-mlkem-demo
+# Hybrid BB84-MLKEM Demo
 
 This project is a simulation of a hybrid key exchange protocol that combines the BB84 quantum key distribution protocol with the ML-KEM (Module-Lattice-based Key Encapsulation Mechanism) post-quantum cryptography algorithm.
 
