@@ -4,6 +4,8 @@ This project is a simulation of a hybrid key exchange protocol that combines the
 
 The simulation is built using `qunetsim` and demonstrates a secure key exchange between a classical node and a quantum node, facilitated by a middleware node.
 
+---
+
 ## Features
 
 - **BB84 Protocol**: Implements the BB84 protocol for quantum key distribution, including mechanisms for sifting, error estimation, and privacy amplification.
@@ -11,30 +13,7 @@ The simulation is built using `qunetsim` and demonstrates a secure key exchange 
 - **Hybrid Key Exchange**: Demonstrates a fusion of the two protocols where a classical and quantum node can establish a shared secret key.
 - **Network Simulation**: Uses `qunetsim` to simulate the quantum and classical network components.
 
-## Requirements
-
-- Python 3.7+
-- Dependencies can be found in `requirements.txt`.
-
-## Installation
-
-1. Clone the repository:
-
-2. Install the required packages:
-
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-## Usage
-
-To run the simulation, execute the `main.py` script:
-
-```bash
-python main.py
-```
-
-The script will set up a network with three nodes: a classical node, a middleware node, and a quantum node. It will then run the hybrid key exchange protocol and print the derived shared key from the perspectives of the classical and quantum nodes.
+---
 
 ## Project Structure
 
@@ -46,3 +25,34 @@ The script will set up a network with three nodes: a classical node, a middlewar
 - `requirements.txt`: A list of the Python packages required for the project.
 - `.gitignore`: Standard Python gitignore file.
 - `README.md`: This file.
+
+---
+
+## Requirements
+
+- Python 3.7+
+- The dependencies listed in `requirements.txt`
+
+---
+
+## Installation
+
+1. Clone the repository:
+
+2. Install the required packages:
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+---
+
+## Usage
+
+To run the simulation, execute the `main.py` script:
+
+```bash
+python main.py
+```
+
+The script will set up a network with three nodes: a classical node, a middleware node, and a quantum node. It will then run the hybrid key exchange protocol and print the derived shared key from the perspectives of the classical and quantum nodes.
